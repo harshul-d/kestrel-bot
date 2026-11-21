@@ -134,6 +134,16 @@ type Brain struct {
 	mode string
 	dbg  Debug
 	rf   roofState
+
+	// practice: hold a nook (see nook.go)
+	nooks        *nookMap
+	nookIdx      int
+	nook         [2]float64
+	nookDir      float64
+	nookBad      map[int]float64
+	nookTravel   float64
+	nookBudget   float64
+	nookNextPick float64
 }
 
 func NewBrain(h *Hello) *Brain {
@@ -155,12 +165,17 @@ func NewBrain(h *Hello) *Brain {
 		lastDealtT:   -100,
 		hitT:         -100,
 		soundT:       -100,
+		nookIdx:      -1,
+		nookBad:      map[int]float64{},
 	}
 	dir := h.Map.Dir
 	if dir == "" {
 		dir = "/arena"
 	}
 	b.w = LoadWorld(dir)
+	if optNook {
+		b.nooks = buildNooks(b.w)
+	}
 	return b
 }
 
@@ -754,6 +769,13 @@ func (b *Brain) Act(o *Obs) *Action {
 		}
 	}
 
+	// practice: hold a nook so the squad comes at us from the front
+	anchored := optNook && !b.ffa && !zoneUrgent && b.nookUpdate(o, x, y)
+	dA := 0.0
+	if anchored {
+		dA = hyp(x, y, b.nook[0], b.nook[1])
+	}
+
 	// ---- movement goal ----
 	var goal *[2]float64
 	moveScale := 1.0
@@ -863,6 +885,13 @@ func (b *Brain) Act(o *Obs) *Action {
 		}
 		if duelHandled {
 			// handled above
+		} else if anchored {
+			// don't chase or back off: stay in the nook and let them walk into the open arc
+			b.mode = "fight-nook"
+			if dA > 3.5 {
+				g := b.nook
+				goal = &g
+			}
 		} else if optNoChase && !tLOS && o.Zone.NextRadius > 70 && o.Alive > 3 {
 			// it broke line of sight: don't walk into the squad's crossfire; loot or hold, facing it
 			b.mode = "roam"
@@ -882,7 +911,12 @@ func (b *Brain) Act(o *Obs) *Action {
 	} else if target != nil { // npc
 		b.mode = "npc"
 		strafe = true
-		if targetDist > 70 {
+		if anchored {
+			if dA > 3.5 {
+				g := b.nook
+				goal = &g
+			}
+		} else if targetDist > 70 {
 			g := [2]float64{target.Pos[0], target.Pos[1]}
 			goal = &g
 		}
@@ -961,6 +995,14 @@ func (b *Brain) Act(o *Obs) *Action {
 		} else if cg := b.crateGoal(o, safeInZone, target == nil && hpFrac >= optRegenHP); cg != nil && goal == nil {
 			goal = cg
 			b.mode = "crate"
+		} else if anchored && goal == nil {
+			b.mode = "nook"
+			if dA > 2.5 {
+				g := b.nook
+				goal = &g
+			} else {
+				moveScale = 0
+			}
 		} else if zoneGoal != nil && goal == nil {
 			goal = zoneGoal
 			b.mode = "zone"
@@ -1088,6 +1130,9 @@ func (b *Brain) Act(o *Obs) *Action {
 		case b.hasRecentTrack(4):
 			tr := b.recentTrack()
 			aimYaw = math.Atan2(tr.A.Pos[1]-y, tr.A.Pos[0]-x)
+		case anchored && dA < 6:
+			// watch the open arc
+			aimYaw = b.nookDir + 1.1*math.Sin(b.t*1.3)
 		case optScan360:
 			// keep turning at full rate: a full look-around every ~1.6 s
 			aimYaw = me.Aim[0] + 1.0
