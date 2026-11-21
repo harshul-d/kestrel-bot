@@ -25,6 +25,8 @@ type World struct {
 	navH   []float32
 	stand  []bool
 	ok     bool
+	roofOf []int32
+	Roofs  []Roof
 }
 
 const navStep = 2.0
@@ -212,6 +214,7 @@ func LoadWorld(dir string) *World {
 		}
 	}
 	w.ok = true
+	w.ComputeRoofs()
 	return w
 }
 

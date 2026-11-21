@@ -36,3 +36,21 @@ func TestPath(t *testing.T) {
 		t.Logf("%v -> %d waypoints, end %v, %v", c, len(p), end, time.Since(st))
 	}
 }
+
+func TestRoofs(t *testing.T) {
+	w := LoadWorld("../kit/mechfight-kit/arena")
+	if !w.ok {
+		t.Skip("no map")
+	}
+	n, routes := 0, 0
+	for _, r := range w.Roofs {
+		if len(r.Edges) > 0 {
+			n++
+			routes += len(r.Edges)
+			if n <= 8 {
+				t.Logf("roof %d cells %d H %.1f rise %.1f centre %.0f,%.0f edges %d", r.ID, len(r.Cells), r.H, r.Rise, r.CX, r.CY, len(r.Edges))
+			}
+		}
+	}
+	t.Logf("roofs total %d, climbable %d, routes %d", len(w.Roofs), n, routes)
+}

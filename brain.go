@@ -2,14 +2,68 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"sort"
 )
+
+// variant switches (env, for simulator screening); defaults are the shipped behaviour
+var (
+	optThreatOnly = envBool("MECH_THREAT_ONLY", false)
+	optNPC        = envBool("MECH_NPC", true)
+	optCrates     = envBool("MECH_CRATES", true)
+	optUpgDmg     = envBool("MECH_UPG_DMG", false)
+	optLtgFirst   = envBool("MECH_LTG_FIRST", false)
+	optPrefGun    = envFloat("MECH_PREF_GUN", 80)
+	optPrefLaser  = envFloat("MECH_PREF_LASER", 130)
+	optStrafeMin  = envFloat("MECH_STRAFE_MIN", 0.35)
+	optStrafeSpan = envFloat("MECH_STRAFE_SPAN", 0.8)
+	optNPCRange   = envFloat("MECH_NPC_RANGE", 110)
+	optNPCHP      = envFloat("MECH_NPC_HP", 0.45)
+	optRearBias   = envFloat("MECH_REAR_BIAS", 1.0)
+	optRoof       = envBool("MECH_ROOF", false)
+	optRush       = envBool("MECH_RUSH", true) // go for a laser/lightning even mid-fight
+	optRushRange  = envFloat("MECH_RUSH_RANGE", 140)
+	optFlee       = envBool("MECH_FLEE", false) // sprint away when outnumbered or losing
+	optJump       = envBool("MECH_JUMP", false) // jump to dodge aimed lasers and incoming bullets
+	optFightBoost = envBool("MECH_FIGHT_BOOST", false)
+	optScan360    = envBool("MECH_SCAN360", false) // spin the torso a full circle while travelling (seen on the #1 bot)
+	optVelWin     = envFloat("MECH_VEL_WIN", 0)    // s of position history for the lead velocity (0 = instantaneous)
+	optVelBlend   = envFloat("MECH_VEL_BLEND", 1)  // weight of the averaged velocity vs instantaneous
+)
+
+func envFloat(k string, def float64) float64 {
+	if v := os.Getenv(k); v != "" {
+		var f float64
+		if _, err := fmt.Sscanf(v, "%g", &f); err == nil {
+			return f
+		}
+	}
+	return def
+}
+
+func envBool(k string, def bool) bool {
+	v := os.Getenv(k)
+	if v == "" {
+		return def
+	}
+	return v == "1" || v == "true"
+}
+
+var debugLog = os.Getenv("MECH_DEBUG") != ""
+
+type pickMem struct {
+	kind string
+	pos  [3]float64
+	t    float64
+}
 
 type Track struct {
 	A        Actor
 	LastSeen float64
+	hist     [][4]float64 // t, x, y, z
 }
 
 type Brain struct {
@@ -18,8 +72,10 @@ type Brain struct {
 	rng *rand.Rand
 	me  int
 
-	t      float64
-	tracks map[int]*Track
+	t         float64
+	tracks    map[int]*Track
+	attackers map[int]float64
+	seenPicks map[int]pickMem
 
 	// combat state
 	targetID     int
@@ -47,6 +103,7 @@ type Brain struct {
 
 	mode string
 	dbg  Debug
+	rf   roofState
 }
 
 func NewBrain(h *Hello) *Brain {
@@ -55,6 +112,8 @@ func NewBrain(h *Hello) *Brain {
 		rng:          rand.New(rand.NewSource(h.Seed + 7)),
 		me:           h.Slot,
 		tracks:       map[int]*Track{},
+		attackers:    map[int]float64{},
+		seenPicks:    map[int]pickMem{},
 		targetID:     -1,
 		hitBy:        -1,
 		strafeSign:   1,
@@ -122,6 +181,17 @@ func slotOf(o *Obs, kind string) int {
 }
 
 func weaponPrio(kind string) int {
+	if optLtgFirst {
+		switch kind {
+		case "lightning":
+			return 3
+		case "laser":
+			return 2
+		case "mortar":
+			return 1
+		}
+		return 0
+	}
 	switch kind {
 	case "laser":
 		return 3
@@ -160,6 +230,9 @@ func (b *Brain) Act(o *Obs) *Action {
 	for _, e := range o.Events {
 		switch e.Type {
 		case "damaged":
+			if e.By != nil && e.Weapon != "npc" {
+				b.attackers[*e.By] = b.t
+			}
 			if e.Weapon != "zone" {
 				b.lastDamagedT = b.t
 				if e.Bearing != nil {
@@ -209,13 +282,33 @@ func (b *Brain) Act(o *Obs) *Action {
 				continue
 			}
 			enemies = append(enemies, m)
-			b.tracks[m.ID] = &Track{A: m, LastSeen: b.t}
+			tr := b.tracks[m.ID]
+			if tr == nil {
+				tr = &Track{}
+				b.tracks[m.ID] = tr
+			}
+			tr.A, tr.LastSeen = m, b.t
+			tr.hist = append(tr.hist, [4]float64{b.t, m.Pos[0], m.Pos[1], m.Pos[2]})
+			for len(tr.hist) > 0 && b.t-tr.hist[0][0] > 2.0 {
+				tr.hist = tr.hist[1:]
+			}
 		} else {
 			npcs = append(npcs, m)
 		}
 	}
 	_ = b.stat(o, "eye_height", 8)
 	muzzleH := b.stat(o, "muzzle_height", 7)
+	// remember weapon pickups (they are only listed while in view)
+	visPick := map[int]bool{}
+	for _, p := range o.Pickups {
+		b.seenPicks[p.ID] = pickMem{p.Kind, p.Pos, b.t}
+		visPick[p.ID] = true
+	}
+	for id, pm := range b.seenPicks {
+		if b.t-pm.t > 90 || (!visPick[id] && hyp(x, y, pm.pos[0], pm.pos[1]) < 30) {
+			delete(b.seenPicks, id)
+		}
+	}
 	muzzle := [3]float64{x, y, z + muzzleH}
 
 	los := func(a Actor) bool {
@@ -234,8 +327,18 @@ func (b *Brain) Act(o *Obs) *Action {
 	for i := range enemies {
 		e := &enemies[i]
 		d := hyp(x, y, e.Pos[0], e.Pos[1])
+		if optThreatOnly && !b.isThreat(e, x, y, d) {
+			continue
+		}
 		l := los(*e)
 		s := e.HP + d*4
+		if optRearBias != 1 {
+			// a target looking away takes rear damage and can't see us
+			toMe := math.Atan2(y-e.Pos[1], x-e.Pos[0])
+			if math.Abs(wrap(e.Aim[0]-toMe)) > math.Pi/2 {
+				s = e.HP*optRearBias + d*4
+			}
+		}
 		if !l {
 			s += 600
 		}
@@ -250,11 +353,11 @@ func (b *Brain) Act(o *Obs) *Action {
 	hpFrac := me.HP / math.Max(1, me.MaxHP)
 
 	// NPCs as targets when no mechs around
-	if target == nil && hpFrac > 0.45 {
+	if optNPC && target == nil && hpFrac > optNPCHP {
 		for i := range npcs {
 			n := &npcs[i]
 			d := hyp(x, y, n.Pos[0], n.Pos[1])
-			if d > 110 {
+			if d > optNPCRange {
 				continue
 			}
 			l := los(*n)
@@ -337,14 +440,35 @@ func (b *Brain) Act(o *Obs) *Action {
 
 		// gun lead
 		gspeed := b.wstat(o, "gun", "speed", 252)
+		lv := target.Vel
+		if optVelWin > 0 && target.Kind == "mech" {
+			if tr := b.tracks[target.ID]; tr != nil && len(tr.hist) >= 3 {
+				// average drift over the window: zig-zag strafing cancels out
+				var old [4]float64
+				found := false
+				for _, h := range tr.hist {
+					if b.t-h[0] <= optVelWin+1e-6 {
+						old, found = h, true
+						break
+					}
+				}
+				if found && b.t-old[0] > 0.15 {
+					span := b.t - old[0]
+					avx := (target.Pos[0] - old[1]) / span
+					avy := (target.Pos[1] - old[2]) / span
+					lv[0] = optVelBlend*avx + (1-optVelBlend)*target.Vel[0]
+					lv[1] = optVelBlend*avy + (1-optVelBlend)*target.Vel[1]
+				}
+			}
+		}
 		airborne := math.Abs(target.Vel[2]) > 0.5
 		g := b.stat(o, "gravity", 22)
 		pred := center
 		for it := 0; it < 4; it++ {
 			dd := math.Sqrt(sq(pred[0]-muzzle[0]) + sq(pred[1]-muzzle[1]) + sq(pred[2]-muzzle[2]))
 			tt := dd/gspeed + 0.05
-			pred[0] = center[0] + target.Vel[0]*tt
-			pred[1] = center[1] + target.Vel[1]*tt
+			pred[0] = center[0] + lv[0]*tt
+			pred[1] = center[1] + lv[1]*tt
 			pred[2] = center[2]
 			if airborne {
 				pred[2] = center[2] + target.Vel[2]*tt - 0.5*g*tt*tt
@@ -431,7 +555,7 @@ func (b *Brain) Act(o *Obs) *Action {
 		if laserSlot >= 0 && o.Self.Weapons[laserSlot].Charge > 0 {
 			fire[laserSlot] = false
 		}
-		if b.t-b.lastDamagedT > 3 {
+		if optCrates && b.t-b.lastDamagedT > 3 {
 			bestD := 140.0
 			for i := range o.Crates {
 				c := &o.Crates[i]
@@ -469,6 +593,7 @@ func (b *Brain) Act(o *Obs) *Action {
 	// ---- threats: incoming projectiles and laser lines ----
 	dodge := [2]float64{}
 	urgentDodge := false
+	bulletThreat := false
 	cz := z + 4.5
 	for _, p := range o.Projectiles {
 		vx, vy, vz := p.Vel[0], p.Vel[1], p.Vel[2]
@@ -511,6 +636,7 @@ func (b *Brain) Act(o *Obs) *Action {
 			}
 			dodge[0] += px
 			dodge[1] += py
+			bulletThreat = true
 		}
 	}
 	for _, e := range enemies {
@@ -534,9 +660,9 @@ func (b *Brain) Act(o *Obs) *Action {
 	boost := false
 	b.mode = "roam"
 	strafe := false
-	prefRange := 80.0
+	prefRange := optPrefGun
 	if laserSlot >= 0 {
-		prefRange = 130
+		prefRange = optPrefLaser
 	}
 	if ltgSlot >= 0 && laserSlot < 0 {
 		prefRange = 28
@@ -557,6 +683,33 @@ func (b *Brain) Act(o *Obs) *Action {
 		}
 		boost = me.Energy > 30
 		strafe = goal == nil
+	} else if optFlee && targetIsMech && b.shouldFlee(o, target, enemies, hpFrac) {
+		b.mode = "flee"
+		var cx, cy float64
+		for _, e := range enemies {
+			cx += e.Pos[0]
+			cy += e.Pos[1]
+		}
+		cx /= float64(len(enemies))
+		cy /= float64(len(enemies))
+		ax, ay := x-cx, y-cy
+		n := math.Max(1e-3, math.Hypot(ax, ay))
+		ax, ay = ax/n, ay/n
+		// bend toward the safe zone if straight away isn't safe
+		for _, da := range []float64{0, 0.5, -0.5, 1.0, -1.0, 1.5, -1.5} {
+			c, sn := math.Cos(da), math.Sin(da)
+			dx, dy := ax*c-ay*sn, ax*sn+ay*c
+			g := [2]float64{x + dx*35, y + dy*35}
+			if safeInZone(g[0], g[1]) {
+				goal = &g
+				break
+			}
+		}
+		if goal == nil && zoneGoal != nil {
+			goal = zoneGoal
+		}
+		boost = me.Energy > 15
+		strafe = false
 	} else if target != nil && targetIsMech {
 		b.mode = "fight"
 		strafe = true
@@ -582,8 +735,20 @@ func (b *Brain) Act(o *Obs) *Action {
 		}
 	}
 
-	// loot when not fighting
+	// weapon rush: an empty slot is worth a detour even mid-fight (we keep shooting on the way)
 	var takeID *int
+	if optRush && !zoneUrgent && b.mode != "flee" && b.mode != "retreat" && hpFrac > 0.2 {
+		if g := b.rushGoal(o, safeInZone); g != nil {
+			goal = g
+			b.mode = "get-weapon"
+			strafe = false
+		}
+	}
+	if optFightBoost && b.mode == "fight" && me.Energy > 60 {
+		boost = true
+	}
+
+	// loot when not fighting
 	if b.mode == "roam" || b.mode == "npc" {
 		if g, tid := b.lootGoal(o, safeInZone, len(enemies) > 0); g != nil {
 			goal = g
@@ -638,7 +803,7 @@ func (b *Brain) Act(o *Obs) *Action {
 	if strafe && target != nil {
 		if b.t > b.strafeT {
 			b.strafeSign = -b.strafeSign
-			b.strafeT = b.t + 0.35 + b.rng.Float64()*0.8
+			b.strafeT = b.t + optStrafeMin + b.rng.Float64()*optStrafeSpan
 		}
 		toT := math.Atan2(target.Pos[1]-y, target.Pos[0]-x)
 		sx, sy := -math.Sin(toT)*b.strafeSign, math.Cos(toT)*b.strafeSign
@@ -666,10 +831,28 @@ func (b *Brain) Act(o *Obs) *Action {
 		boost = false // can't sprint usefully while charging anyway
 	}
 
+	if optJump && me.Grounded && (urgentDodge || bulletThreat) && me.Energy > 20 && b.rng.Float64() < 0.6 {
+		act.Jump = true
+	}
+
+	// ---- rooftops: climb, hold the edge, step back to heal ----
+	roofActive := false
+	if optRoof {
+		if ra, rmv, rj, rb := b.roofPlan(o, target, tLOS, enemies, hpFrac, zoneUrgent, targetDist); ra {
+			roofActive = true
+			mv = rmv
+			act.Jump = rj
+			boost = rb
+		}
+	}
+
 	// ---- stuck handling ----
 	hs := math.Hypot(me.Vel[0], me.Vel[1])
 	want := math.Hypot(mv[0], mv[1])
-	if want > 0.3 && hs < 1.5 && me.Grounded {
+	roofOwnsJets := roofActive && (b.rf.phase == roofClimb || b.rf.phase == roofOn)
+	if roofOwnsJets {
+		b.stuckT = 0
+	} else if want > 0.3 && hs < 1.5 && me.Grounded {
 		b.stuckT += 0.1
 	} else if hs > 3 {
 		b.stuckT = 0
@@ -680,7 +863,7 @@ func (b *Brain) Act(o *Obs) *Action {
 		b.path = nil
 		b.strafeSign = -b.strafeSign
 	}
-	if b.t < b.jetUntil {
+	if b.t < b.jetUntil && !roofOwnsJets {
 		if me.Grounded {
 			act.Jump = true
 		} else {
@@ -698,6 +881,9 @@ func (b *Brain) Act(o *Obs) *Action {
 		case b.hasRecentTrack(4):
 			tr := b.recentTrack()
 			aimYaw = math.Atan2(tr.A.Pos[1]-y, tr.A.Pos[0]-x)
+		case optScan360:
+			// keep turning at full rate: a full look-around every ~1.6 s
+			aimYaw = me.Aim[0] + 1.0
 		case want > 0.2:
 			base := math.Atan2(mv[1], mv[0])
 			ph := math.Mod(b.t, 4.0)
@@ -749,6 +935,17 @@ func (b *Brain) recentTrack() *Track {
 }
 
 func upgradeScore(id string) int {
+	if optUpgDmg {
+		order := []string{"gun_damage", "laser_damage", "gun_rate", "lightning_efficiency", "laser_charge", "armor", "plating", "gun_mag",
+			"nanites", "gun_velocity", "servos", "mortar_reload", "reactor", "capacitor", "lightning_range", "jets", "gyros", "sensors",
+			"lightning_chain", "mortar_velocity", "mortar_splash", "laser_pierce"}
+		for i, s := range order {
+			if s == id {
+				return 100 - i
+			}
+		}
+		return 0
+	}
 	order := []string{"plating", "armor", "laser_damage", "nanites", "gun_damage", "laser_charge", "gun_rate",
 		"lightning_efficiency", "gun_mag", "servos", "gun_velocity", "mortar_reload", "reactor", "capacitor",
 		"lightning_range", "jets", "gyros", "sensors", "lightning_chain", "mortar_velocity", "mortar_splash", "laser_pierce"}
@@ -1045,4 +1242,81 @@ func (b *Brain) idleSpot(o *Obs) *[2]float64 {
 	k := target / d
 	g := [2]float64{ncx + (x-ncx)*k, ncy + (y-ncy)*k}
 	return &g
+}
+
+// isThreat: a mech worth shooting. Opening fire on bystanders pulls them into the fight.
+func (b *Brain) isThreat(e *Actor, x, y, d float64) bool {
+	if t, ok := b.attackers[e.ID]; ok && b.t-t < 20 {
+		return true
+	}
+	if d < 45 {
+		return true
+	}
+	toMe := math.Atan2(y-e.Pos[1], x-e.Pos[0])
+	if e.Charging && math.Abs(wrap(e.Aim[0]-toMe)) < 0.15 {
+		return true
+	}
+	// closing in on us
+	if d < 220 {
+		ux, uy := math.Cos(toMe), math.Sin(toMe)
+		if e.Vel[0]*ux+e.Vel[1]*uy > 4 {
+			return true
+		}
+	}
+	// nearly dead: a cheap kill is worth it
+	if e.HP < 0.25*e.MaxHP && d < 150 {
+		return true
+	}
+	return false
+}
+
+// shouldFlee: two or more mechs hit us in the last 3 s, or we're losing a trade at low HP.
+func (b *Brain) shouldFlee(o *Obs, target *Actor, enemies []Actor, hpFrac float64) bool {
+	n := 0
+	for _, t := range b.attackers {
+		if b.t-t < 3 {
+			n++
+		}
+	}
+	if n >= 2 && hpFrac < 0.7 {
+		return true
+	}
+	if hpFrac < 0.35 && target.HP > o.Self.HP*1.1 {
+		return true
+	}
+	return false
+}
+
+// rushGoal: nearest remembered laser/lightning when our second slot is empty (or holds something worse).
+func (b *Brain) rushGoal(o *Obs, safe func(x, y float64) bool) *[2]float64 {
+	x, y, z := o.Self.Pos[0], o.Self.Pos[1], o.Self.Pos[2]
+	cur := 0
+	if len(o.Self.Weapons) > 1 && o.Self.Weapons[1] != nil {
+		cur = weaponPrio(o.Self.Weapons[1].Kind)
+	}
+	var best *[2]float64
+	bs := math.Inf(1)
+	for id, pm := range b.seenPicks {
+		pr := weaponPrio(pm.kind)
+		if pr < 2 || pr <= cur || slotOf(o, pm.kind) >= 0 {
+			continue
+		}
+		if ft, ok := b.takeFail[id]; ok && b.t-ft < 5 {
+			continue
+		}
+		d := hyp(x, y, pm.pos[0], pm.pos[1])
+		if d > optRushRange || !safe(pm.pos[0], pm.pos[1]) {
+			continue
+		}
+		if math.Abs(pm.pos[2]-b.w.Ground(pm.pos[0], pm.pos[1])) > 2 && math.Abs(pm.pos[2]-z) > 3 {
+			continue // on a roof
+		}
+		s := d - float64(pr)*20
+		if s < bs {
+			bs = s
+			g := [2]float64{pm.pos[0], pm.pos[1]}
+			best = &g
+		}
+	}
+	return best
 }
