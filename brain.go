@@ -173,6 +173,9 @@ func NewBrain(h *Hello) *Brain {
 		dir = "/arena"
 	}
 	b.w = LoadWorld(dir)
+	if optPrac {
+		setPracProfile(true)
+	}
 	if optNook {
 		b.nooks = buildNooks(b.w)
 	}
@@ -329,6 +332,9 @@ func (b *Brain) Act(o *Obs) *Action {
 		}
 		if b.ffaTicks >= 5 {
 			b.ffa = true
+			if optPrac {
+				setPracProfile(false) // back to the FFA-tested settings
+			}
 		}
 	}
 	threatOnly := optThreatOnly || (b.ffa && optFFAThreat)
@@ -1362,7 +1368,7 @@ func (b *Brain) findCover(o *Obs, threat [3]float64, safe func(x, y float64) boo
 // lootGoal picks a nearby weapon pickup or cube worth walking to.
 func (b *Brain) lootGoal(o *Obs, safe func(x, y float64) bool, enemySeen bool) (*[2]float64, *int) {
 	x, y := o.Self.Pos[0], o.Self.Pos[1]
-	maxD := 90.0
+	maxD := optIdleLoot
 	if enemySeen {
 		maxD = 30
 	}
