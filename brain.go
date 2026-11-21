@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"math"
 	"math/rand"
+	"os"
 	"sort"
 )
+
+var debugLog = os.Getenv("MECH_DEBUG") != ""
 
 type Track struct {
 	A        Actor
@@ -25,6 +28,10 @@ type Brain struct {
 	targetID     int
 	lastDamagedT float64
 	npcDamagedT  float64
+	peekPos      [2]float64
+	peekT        float64
+	spot         *[2]float64
+	spotT        float64
 	lastDealtT   float64
 	hitBearing   float64
 	hitBy        int
@@ -387,8 +394,9 @@ func (b *Brain) Act(o *Obs) *Action {
 					hold = true // keep holding, auto-fires after hold_s
 				}
 				fire[laserSlot] = hold
-			} else if lw.Cooldown <= 0.05 && tLOS && targetDist < rng-10 &&
+			} else if lw.Cooldown <= 0.05 && (tLOS || targetIsMech) && targetDist < rng-10 &&
 				(targetDist > 35 || (gunSlot < 0 && ltgSlot < 0)) {
+				// (without LOS: charge behind cover, release when we peek out)
 				// charging halves our speed: not worth it point-blank when we have another weapon
 				fire[laserSlot] = true // start charging
 				b.laserHoldT = b.t
@@ -525,6 +533,7 @@ func (b *Brain) Act(o *Obs) *Action {
 			dodge[1] += py
 		}
 	}
+	laserThreat := false
 	for _, e := range enemies {
 		if !e.Charging {
 			continue
@@ -533,6 +542,10 @@ func (b *Brain) Act(o *Obs) *Action {
 		toMe := math.Atan2(y-e.Pos[1], x-e.Pos[0])
 		off := math.Abs(wrap(e.Aim[0] - toMe))
 		if d*math.Sin(math.Min(off, 1.5)) < 8 && d < 300 {
+			if !los(e) {
+				continue
+			}
+			laserThreat = true
 			px, py := -math.Sin(toMe), math.Cos(toMe)
 			dodge[0] += px * b.strafeSign * 2
 			dodge[1] += py * b.strafeSign * 2
@@ -602,7 +615,7 @@ func (b *Brain) Act(o *Obs) *Action {
 		}
 	} else if retreat {
 		b.mode = "retreat"
-		if c := b.findCover(o, threats, safeInZone); c != nil {
+		if c := b.findCover(o, threats, safeInZone, nil); c != nil {
 			goal = c
 		}
 		boost = me.Energy > 30
@@ -611,7 +624,75 @@ func (b *Brain) Act(o *Obs) *Action {
 		b.mode = "fight"
 		strafe = true
 		tp := target.Pos
-		if !tLOS || targetDist > prefRange+35 {
+		// peek-and-hide: duck behind nearby cover while a laser is aimed at us or our guns are down,
+		// step back out to the last firing spot when it's safe
+		ourDown := true
+		if gunSlot >= 0 {
+			gw := o.Self.Weapons[gunSlot]
+			if gw.Reload <= 0 && gw.Ammo > 0 {
+				ourDown = false
+			}
+		}
+		if laserSlot >= 0 {
+			lw := o.Self.Weapons[laserSlot]
+			if lw.Charge > 0 || lw.Cooldown < 0.4 {
+				ourDown = false
+			}
+		}
+		if ltgSlot >= 0 && targetDist < 45 {
+			ourDown = false
+		}
+		enemyCharging := false
+		for _, e := range enemies {
+			if e.Charging {
+				enemyCharging = true
+			}
+		}
+		if tLOS {
+			b.peekPos = [2]float64{x, y}
+			b.peekT = b.t
+		}
+		hidden := false
+		if debugLog {
+			c := b.findCover(o, threats, safeInZone, []float64{4, 7, 10, 13})
+			logf("t=%.1f los=%v lt=%v down=%v ech=%v dist=%.0f cover=%v", b.t, tLOS, laserThreat, ourDown, enemyCharging, targetDist, c != nil)
+		}
+		if tLOS && (laserThreat || ourDown) && targetDist > 30 {
+			if c := b.findCover(o, threats, safeInZone, []float64{4, 7, 10, 13}); c != nil {
+				goal = c
+				b.mode = "hide"
+				strafe = false
+				boost = me.Energy > 20
+				hidden = true
+			}
+		} else if !tLOS && (enemyCharging || ourDown) && b.t-b.peekT < 6 {
+			// stay behind cover until their charge is spent and ours is ready
+			b.mode = "cover"
+			strafe = false
+			hidden = true
+			moveScale = 0.3
+		} else if !tLOS && b.t-b.peekT < 6 && hyp(x, y, b.peekPos[0], b.peekPos[1]) < 25 {
+			g := b.peekPos
+			goal = &g
+			b.mode = "peek"
+			strafe = false
+			hidden = true
+		}
+		if !hidden && tLOS && targetDist > 40 {
+			if b.t-b.spotT > 1.0 {
+				b.spot = b.fightSpot(o, target, threats, safeInZone, prefRange)
+				b.spotT = b.t
+			}
+			if b.spot != nil && hyp(x, y, b.spot[0], b.spot[1]) > 3 {
+				g := *b.spot
+				goal = &g
+				b.mode = "position"
+				hidden = true
+			}
+		}
+		if hidden {
+			// handled above
+		} else if !tLOS || targetDist > prefRange+35 {
 			g := [2]float64{tp[0], tp[1]}
 			goal = &g
 		} else if targetDist < prefRange-30 && prefRange > 40 {
@@ -643,7 +724,7 @@ func (b *Brain) Act(o *Obs) *Action {
 		} else if tr := b.recentTrack(); tr != nil && b.t-tr.LastSeen < 20 {
 			teye := [3]float64{tr.A.Pos[0], tr.A.Pos[1], tr.A.Pos[2] + 8}
 			if b.w.Clear(teye, [3]float64{x, y, z + 6}, 1, 1) {
-				if c := b.findCover(o, [][3]float64{tr.A.Pos}, safeInZone); c != nil {
+				if c := b.findCover(o, [][3]float64{tr.A.Pos}, safeInZone, nil); c != nil {
 					goal = c
 					moveScale = 1
 				}
@@ -944,14 +1025,17 @@ func (b *Brain) safeDir(x, y float64, mv [2]float64) [2]float64 {
 	return mv
 }
 
-func (b *Brain) findCover(o *Obs, threats [][3]float64, safe func(x, y float64) bool) *[2]float64 {
+func (b *Brain) findCover(o *Obs, threats [][3]float64, safe func(x, y float64) bool, radii []float64) *[2]float64 {
 	x, y := o.Self.Pos[0], o.Self.Pos[1]
 	if len(threats) == 0 {
 		return nil
 	}
 	var best *[2]float64
 	bd := math.Inf(1)
-	for _, r := range []float64{12, 22, 34, 48} {
+	if radii == nil {
+		radii = []float64{12, 22, 34, 48}
+	}
+	for _, r := range radii {
 		for k := 0; k < 16; k++ {
 			a := float64(k) * math.Pi / 8
 			px, py := x+math.Cos(a)*r, y+math.Sin(a)*r
@@ -994,6 +1078,7 @@ func (b *Brain) lootGoal(o *Obs, safe func(x, y float64) bool, enemySeen bool) (
 	if enemySeen {
 		maxD = 30
 	}
+	haveLaser := slotOf(o, "laser") >= 0
 	cur := 0
 	empty := len(o.Self.Weapons) > 1 && o.Self.Weapons[1] == nil
 	if !empty && len(o.Self.Weapons) > 1 && o.Self.Weapons[1] != nil {
@@ -1014,13 +1099,20 @@ func (b *Brain) lootGoal(o *Obs, safe func(x, y float64) bool, enemySeen bool) (
 			continue
 		}
 		d := hyp(x, y, p.Pos[0], p.Pos[1])
-		if d > maxD || !safe(p.Pos[0], p.Pos[1]) {
+		lim := maxD
+		if p.Kind == "laser" && !haveLaser {
+			lim = maxD * 1.8
+		}
+		if d > lim || !safe(p.Pos[0], p.Pos[1]) {
 			continue
 		}
 		if math.Abs(p.Pos[2]-b.w.Ground(p.Pos[0], p.Pos[1])) > 2 && math.Abs(p.Pos[2]-o.Self.Pos[2]) > 3 {
 			continue // on a roof we're not on
 		}
 		s := d - float64(pr)*25
+		if p.Kind == "laser" && !haveLaser {
+			s -= 60
+		}
 		if s < bs {
 			bs = s
 			g := [2]float64{p.Pos[0], p.Pos[1]}
@@ -1140,4 +1232,71 @@ func weaponDPS(kind string, d float64) float64 {
 		}
 	}
 	return 0
+}
+
+// fightSpot finds a nearby standable point that can shoot the target and has a hiding place within ~8 m.
+func (b *Brain) fightSpot(o *Obs, target *Actor, threats [][3]float64, safe func(x, y float64) bool, pref float64) *[2]float64 {
+	w := b.w
+	if !w.ok {
+		return nil
+	}
+	x, y := o.Self.Pos[0], o.Self.Pos[1]
+	th := 9.0 * (1 + 0.05*float64(target.Cubes))
+	tc := [3]float64{target.Pos[0], target.Pos[1], target.Pos[2] + th*0.5}
+	teye := [3]float64{target.Pos[0], target.Pos[1], target.Pos[2] + 8}
+	hideAt := func(px, py float64) bool {
+		for _, r := range []float64{5, 8} {
+			for k := 0; k < 8; k++ {
+				a := float64(k) * math.Pi / 4
+				hx, hy := px+math.Cos(a)*r, py+math.Sin(a)*r
+				if !w.Standable(hx, hy) || !w.WalkLine(px, py, hx, hy) {
+					continue
+				}
+				hz := w.Surf(hx, hy)
+				blocked := !w.Clear(teye, [3]float64{hx, hy, hz + 6}, 1, 1)
+				for _, t := range threats {
+					if !blocked {
+						break
+					}
+					blocked = !w.Clear([3]float64{t[0], t[1], t[2] + 8}, [3]float64{hx, hy, hz + 6}, 1, 1)
+				}
+				if blocked {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	var best *[2]float64
+	bs := math.Inf(1)
+	try := func(px, py, r float64) {
+		if !w.Standable(px, py) || !safe(px, py) {
+			return
+		}
+		pz := w.Surf(px, py)
+		if !w.Clear([3]float64{px, py, pz + 7}, tc, 3, 1.5) {
+			return
+		}
+		if !hideAt(px, py) {
+			return
+		}
+		d := hyp(px, py, target.Pos[0], target.Pos[1])
+		s := r + 0.25*math.Abs(d-pref)
+		if s < bs {
+			bs = s
+			g := [2]float64{px, py}
+			best = &g
+		}
+	}
+	try(x, y, 0)
+	if best != nil {
+		return best
+	}
+	for _, r := range []float64{8, 16, 26} {
+		for k := 0; k < 12; k++ {
+			a := float64(k) * math.Pi / 6
+			try(x+math.Cos(a)*r, y+math.Sin(a)*r, r)
+		}
+	}
+	return best
 }
