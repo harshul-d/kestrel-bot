@@ -338,6 +338,8 @@ func (b *Brain) Act(o *Obs) *Action {
 		}
 	}
 	threatOnly := optThreatOnly || (b.ffa && optFFAThreat)
+	// practice: leave bystanders alone until late, like the top practice bots
+	pracThreat := optPracThreat && !b.ffa && o.Zone.NextRadius > 70 && o.Alive > 3
 	quiet := b.ffa && optFFAQuiet && b.hasRecentTrack(10)
 
 	// ---- upgrades ----
@@ -416,6 +418,9 @@ func (b *Brain) Act(o *Obs) *Action {
 		e := &enemies[i]
 		d := hyp(x, y, e.Pos[0], e.Pos[1])
 		if threatOnly && !b.isThreat(e, x, y, d) {
+			continue
+		}
+		if pracThreat && !b.pracEngage(e, x, y, d) {
 			continue
 		}
 		l := los(*e)
