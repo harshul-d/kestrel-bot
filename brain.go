@@ -26,11 +26,11 @@ var (
 	optRoof       = envBool("MECH_ROOF", false)
 	optRush       = envBool("MECH_RUSH", true) // go for a laser/lightning even mid-fight
 	optRushRange  = envFloat("MECH_RUSH_RANGE", 140)
-	optFlee       = envBool("MECH_FLEE", false) // sprint away when outnumbered or losing
+	optFlee       = envBool("MECH_FLEE", true)  // sprint away when outnumbered or losing
 	optJump       = envBool("MECH_JUMP", false) // jump to dodge aimed lasers and incoming bullets
 	optFightBoost = envBool("MECH_FIGHT_BOOST", false)
-	optDuelCover  = envBool("MECH_DUEL_COVER", true) // hide close by to reload/charge, then return to the duel spot (seen on the #1 bot)
-	optScan360    = envBool("MECH_SCAN360", true)
+	optDuelCover  = envBool("MECH_DUEL_COVER", false) // hide close by to reload/charge, then return to the duel spot (seen on the #1 bot)
+	optScan360    = envBool("MECH_SCAN360", false)
 	optLootFight  = envBool("MECH_LOOT_FIGHT", false)   // grab cubes (corpse drops) within reach even mid-fight
 	optDropPrio   = envBool("MECH_DROP_PRIO", false)    // go for supply drops (full heal + 3 cubes) even mid-fight
 	optLaserFirst = envFloat("MECH_LASER_FIRST", 0)     // target-score bonus (HP units) for mechs carrying a laser
