@@ -33,13 +33,16 @@ var (
 	optFightBoost = envBool("MECH_FIGHT_BOOST", false)
 	optDuelCover  = envBool("MECH_DUEL_COVER", true) // hide close by to reload/charge, then return to the duel spot (seen on the #1 bot)
 	optScan360    = envBool("MECH_SCAN360", false)
-	optLootFight  = envBool("MECH_LOOT_FIGHT", false)   // grab cubes (corpse drops) within reach even mid-fight
+	optLootFight  = envBool("MECH_LOOT_FIGHT", true)    // grab cubes (corpse drops) within reach even mid-fight
 	optDropPrio   = envBool("MECH_DROP_PRIO", false)    // go for supply drops (full heal + 3 cubes) even mid-fight
 	optLaserFirst = envFloat("MECH_LASER_FIRST", 0)     // target-score bonus (HP units) for mechs carrying a laser
 	optRushAny    = envBool("MECH_RUSH_ANY", false)     // rush for a mortar too when the slot is empty
 	optTwoSpecial = envBool("MECH_TWO_SPECIALS", false) // swap the gun out to carry laser + lightning    // spin the torso a full circle while travelling (seen on the #1 bot)
 	optVelWin     = envFloat("MECH_VEL_WIN", 0)         // s of position history for the lead velocity (0 = instantaneous)
 	optVelBlend   = envFloat("MECH_VEL_BLEND", 1)       // weight of the averaged velocity vs instantaneous
+	optRegenHP    = envFloat("MECH_REGEN_HP", 0)        // below this HP fraction, leave crates and drones alone so regen can run
+	optLootR      = envFloat("MECH_LOOT_R", 35)         // cube reach mid-fight (m)
+	optCrateHunt  = envFloat("MECH_CRATE_HUNT", 0)      // when idle, walk toward seen crates this close (m); 0 = off
 )
 
 func envFloat(k string, def float64) float64 {
@@ -384,7 +387,7 @@ func (b *Brain) Act(o *Obs) *Action {
 	hpFrac := me.HP / math.Max(1, me.MaxHP)
 
 	// NPCs as targets when no mechs around
-	if optNPC && target == nil && hpFrac > optNPCHP {
+	if optNPC && target == nil && hpFrac > optNPCHP && hpFrac >= optRegenHP {
 		for i := range npcs {
 			n := &npcs[i]
 			d := hyp(x, y, n.Pos[0], n.Pos[1])
@@ -586,7 +589,7 @@ func (b *Brain) Act(o *Obs) *Action {
 		if laserSlot >= 0 && o.Self.Weapons[laserSlot].Charge > 0 {
 			fire[laserSlot] = false
 		}
-		if optCrates && b.t-b.lastDamagedT > 3 {
+		if optCrates && b.t-b.lastDamagedT > 3 && hpFrac >= optRegenHP {
 			bestD := 140.0
 			for i := range o.Crates {
 				c := &o.Crates[i]
@@ -814,9 +817,9 @@ func (b *Brain) Act(o *Obs) *Action {
 		}
 	}
 	if optLootFight && !zoneUrgent && b.mode != "get-weapon" && b.mode != "flee" && b.mode != "retreat" && hpFrac > 0.15 {
-		lim := 35.0
+		lim := optLootR
 		if target == nil || !tLOS {
-			lim = 70
+			lim = math.Max(70, optLootR)
 		}
 		var best *[2]float64
 		bd := lim
@@ -874,6 +877,9 @@ func (b *Brain) Act(o *Obs) *Action {
 		} else if dg := b.dropGoal(o, len(enemies) > 0); dg != nil {
 			goal = dg
 			b.mode = "drop"
+		} else if cg := b.crateGoal(o, safeInZone, target == nil && hpFrac >= optRegenHP); cg != nil && goal == nil {
+			goal = cg
+			b.mode = "crate"
 		} else if zoneGoal != nil && goal == nil {
 			goal = zoneGoal
 			b.mode = "zone"
@@ -1482,4 +1488,27 @@ func gunSwappable(o *Obs) bool {
 		return false
 	}
 	return o.Self.Weapons[0].Kind == "gun" && weaponPrio(o.Self.Weapons[1].Kind) >= 2
+}
+
+// crateGoal: walk toward the nearest seen crate (cubes: +4% HP and damage each) when idle.
+func (b *Brain) crateGoal(o *Obs, safe func(x, y float64) bool, ok bool) *[2]float64 {
+	if optCrateHunt <= 0 || !ok || !optCrates {
+		return nil
+	}
+	x, y, z := o.Self.Pos[0], o.Self.Pos[1], o.Self.Pos[2]
+	var best *[2]float64
+	bd := optCrateHunt
+	for _, c := range o.Crates {
+		d := hyp(x, y, c.Pos[0], c.Pos[1])
+		if d < 30 || d > bd || !safe(c.Pos[0], c.Pos[1]) {
+			continue
+		}
+		if math.Abs(c.Pos[2]-b.w.Ground(c.Pos[0], c.Pos[1])) > 2 && math.Abs(c.Pos[2]-z) > 3 {
+			continue // on a roof we're not on
+		}
+		bd = d
+		g := [2]float64{c.Pos[0], c.Pos[1]}
+		best = &g
+	}
+	return best
 }
