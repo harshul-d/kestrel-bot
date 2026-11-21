@@ -139,7 +139,7 @@ type Brain struct {
 func NewBrain(h *Hello) *Brain {
 	b := &Brain{
 		cfg:          h.Config,
-		rng:          rand.New(rand.NewSource(h.Seed + 7)),
+		rng:          rand.New(rand.NewSource(h.Seed + int64(envFloat("MECH_SALT", 7)))),
 		me:           h.Slot,
 		tracks:       map[int]*Track{},
 		attackers:    map[int]float64{},
