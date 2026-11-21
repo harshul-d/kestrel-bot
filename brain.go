@@ -42,6 +42,9 @@ var (
 	optVelBlend   = envFloat("MECH_VEL_BLEND", 1)       // weight of the averaged velocity vs instantaneous
 	optRegenHP    = envFloat("MECH_REGEN_HP", 0)        // below this HP fraction, leave crates and drones alone so regen can run
 	optLootR      = envFloat("MECH_LOOT_R", 35)         // cube reach mid-fight (m)
+	optNoMortar   = envBool("MECH_NO_MORTAR", false)    // never carry a mortar (cook-off: lasers hit its holder +60%)
+	optFocus      = envBool("MECH_FOCUS", false)        // stick to a visible target, finish the wounded up close, release a lethal laser early
+	optNoChase    = envBool("MECH_NO_CHASE", false)     // don't walk after a target that broke line of sight (until late)
 	optCrateHunt  = envFloat("MECH_CRATE_HUNT", 0)      // when idle, walk toward seen crates this close (m); 0 = off
 )
 
@@ -95,6 +98,8 @@ type Brain struct {
 
 	// combat state
 	targetID     int
+	focusID      int
+	focusT       float64
 	lastDamagedT float64
 	lastDealtT   float64
 	hitBearing   float64
@@ -132,6 +137,8 @@ func NewBrain(h *Hello) *Brain {
 		seenPicks:    map[int]pickMem{},
 		seenCubes:    map[int]pickMem{},
 		targetID:     -1,
+		focusID:      -1,
+		focusT:       -100,
 		hitBy:        -1,
 		strafeSign:   1,
 		takeFail:     map[int]float64{},
@@ -215,6 +222,9 @@ func weaponPrio(kind string) int {
 	case "lightning":
 		return 2
 	case "mortar":
+		if optNoMortar {
+			return 0
+		}
 		return 1
 	}
 	return 0
@@ -376,7 +386,14 @@ func (b *Brain) Act(o *Obs) *Action {
 		if !l {
 			s += 600
 		}
-		if e.ID == b.targetID {
+		if optFocus {
+			if l && e.ID == b.focusID && b.t-b.focusT < 2 {
+				s -= 1600 // keep shooting the same bot until it dies or hides
+			}
+			if e.MaxHP > 0 && e.HP <= 0.3*e.MaxHP {
+				s -= 400
+			}
+		} else if e.ID == b.targetID {
 			s -= 250
 		}
 		if s < bestScore {
@@ -384,6 +401,9 @@ func (b *Brain) Act(o *Obs) *Action {
 		}
 	}
 	targetIsMech := target != nil
+	if target != nil && tLOS {
+		b.focusID, b.focusT = target.ID, b.t
+	}
 	hpFrac := me.HP / math.Max(1, me.MaxHP)
 
 	// NPCs as targets when no mechs around
@@ -531,6 +551,22 @@ func (b *Brain) Act(o *Obs) *Action {
 				hold := true
 				if lw.Charge >= full-0.02 && tLOS && missOK(directYaw, directPitch, targetDist, trad*0.8) {
 					hold = false // release: fire
+				}
+				if optFocus && tLOS && target.Kind == "mech" && lw.Charge >= b.wstat(o, "laser", "min_charge", 0.15) {
+					mf := b.wstat(o, "laser", "min_frac", 0.35)
+					dmg := b.wstat(o, "laser", "damage", 315) * (mf + (1-mf)*math.Min(1, lw.Charge/full))
+					dmg *= 1 + 0.04*math.Min(float64(me.Cubes), 10)
+					for _, k := range target.Weapons {
+						if k == "mortar" {
+							dmg *= 1.6
+						}
+					}
+					if 0.8*dmg >= target.HP {
+						aimYaw, aimPitch = directYaw, directPitch
+						if missOK(directYaw, directPitch, targetDist, trad*0.8) {
+							hold = false // enough to kill now
+						}
+					}
 				}
 				if !tLOS && lw.Charge >= full && b.t-b.laserHoldT > 1.0 {
 					hold = true // keep holding, auto-fires after hold_s
@@ -748,6 +784,17 @@ func (b *Brain) Act(o *Obs) *Action {
 		b.mode = "fight"
 		strafe = true
 		tp := target.Pos
+		if optFocus && target.MaxHP > 0 && target.HP < 0.38*target.MaxHP && hpFrac > 0.42 {
+			near := 0
+			for _, e := range enemies {
+				if hyp(x, y, e.Pos[0], e.Pos[1]) < 120 {
+					near++
+				}
+			}
+			if near <= 2 {
+				prefRange = 20 // close in and finish it
+			}
+		}
 		duelHandled := false
 		if optDuelCover {
 			gunDown := gunSlot < 0 || o.Self.Weapons[gunSlot].Reload > 0 || o.Self.Weapons[gunSlot].Ammo <= 0
@@ -786,6 +833,10 @@ func (b *Brain) Act(o *Obs) *Action {
 		}
 		if duelHandled {
 			// handled above
+		} else if optNoChase && !tLOS && o.Zone.NextRadius > 70 && o.Alive > 3 {
+			// it broke line of sight: don't walk into the squad's crossfire; loot or hold, facing it
+			b.mode = "roam"
+			strafe = false
 		} else if !tLOS || targetDist > prefRange+35 {
 			g := [2]float64{tp[0], tp[1]}
 			goal = &g
