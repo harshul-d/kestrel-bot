@@ -42,6 +42,9 @@ func TestRoofs(t *testing.T) {
 	if !w.ok {
 		t.Skip("no map")
 	}
+	if w.Roofs == nil {
+		w.ComputeRoofs()
+	}
 	n, routes := 0, 0
 	for _, r := range w.Roofs {
 		if len(r.Edges) > 0 {

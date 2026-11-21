@@ -214,7 +214,9 @@ func LoadWorld(dir string) *World {
 		}
 	}
 	w.ok = true
-	w.ComputeRoofs()
+	if optRoof {
+		w.ComputeRoofs()
+	}
 	return w
 }
 

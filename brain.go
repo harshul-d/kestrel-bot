@@ -29,9 +29,15 @@ var (
 	optFlee       = envBool("MECH_FLEE", false) // sprint away when outnumbered or losing
 	optJump       = envBool("MECH_JUMP", false) // jump to dodge aimed lasers and incoming bullets
 	optFightBoost = envBool("MECH_FIGHT_BOOST", false)
-	optScan360    = envBool("MECH_SCAN360", false) // spin the torso a full circle while travelling (seen on the #1 bot)
-	optVelWin     = envFloat("MECH_VEL_WIN", 0)    // s of position history for the lead velocity (0 = instantaneous)
-	optVelBlend   = envFloat("MECH_VEL_BLEND", 1)  // weight of the averaged velocity vs instantaneous
+	optDuelCover  = envBool("MECH_DUEL_COVER", true) // hide close by to reload/charge, then return to the duel spot (seen on the #1 bot)
+	optScan360    = envBool("MECH_SCAN360", true)
+	optLootFight  = envBool("MECH_LOOT_FIGHT", false)   // grab cubes (corpse drops) within reach even mid-fight
+	optDropPrio   = envBool("MECH_DROP_PRIO", false)    // go for supply drops (full heal + 3 cubes) even mid-fight
+	optLaserFirst = envFloat("MECH_LASER_FIRST", 0)     // target-score bonus (HP units) for mechs carrying a laser
+	optRushAny    = envBool("MECH_RUSH_ANY", false)     // rush for a mortar too when the slot is empty
+	optTwoSpecial = envBool("MECH_TWO_SPECIALS", false) // swap the gun out to carry laser + lightning    // spin the torso a full circle while travelling (seen on the #1 bot)
+	optVelWin     = envFloat("MECH_VEL_WIN", 0)         // s of position history for the lead velocity (0 = instantaneous)
+	optVelBlend   = envFloat("MECH_VEL_BLEND", 1)       // weight of the averaged velocity vs instantaneous
 )
 
 func envFloat(k string, def float64) float64 {
@@ -76,6 +82,11 @@ type Brain struct {
 	tracks    map[int]*Track
 	attackers map[int]float64
 	seenPicks map[int]pickMem
+	seenCubes map[int]pickMem
+	duelPhase int // 0 none, 1 hiding, 2 returning
+	duelSpot  [2]float64
+	duelT     float64
+	duelCover [2]float64
 
 	// combat state
 	targetID     int
@@ -114,6 +125,7 @@ func NewBrain(h *Hello) *Brain {
 		tracks:       map[int]*Track{},
 		attackers:    map[int]float64{},
 		seenPicks:    map[int]pickMem{},
+		seenCubes:    map[int]pickMem{},
 		targetID:     -1,
 		hitBy:        -1,
 		strafeSign:   1,
@@ -309,6 +321,16 @@ func (b *Brain) Act(o *Obs) *Action {
 			delete(b.seenPicks, id)
 		}
 	}
+	visCube := map[int]bool{}
+	for _, c := range o.Cubes {
+		b.seenCubes[c.ID] = pickMem{"cube", c.Pos, b.t}
+		visCube[c.ID] = true
+	}
+	for id, pm := range b.seenCubes {
+		if b.t-pm.t > 60 || (!visCube[id] && hyp(x, y, pm.pos[0], pm.pos[1]) < 25) {
+			delete(b.seenCubes, id)
+		}
+	}
 	muzzle := [3]float64{x, y, z + muzzleH}
 
 	los := func(a Actor) bool {
@@ -332,6 +354,13 @@ func (b *Brain) Act(o *Obs) *Action {
 		}
 		l := los(*e)
 		s := e.HP + d*4
+		if optLaserFirst != 0 {
+			for _, k := range e.Weapons {
+				if k == "laser" {
+					s -= optLaserFirst
+				}
+			}
+		}
 		if optRearBias != 1 {
 			// a target looking away takes rear damage and can't see us
 			toMe := math.Atan2(y-e.Pos[1], x-e.Pos[0])
@@ -502,7 +531,7 @@ func (b *Brain) Act(o *Obs) *Action {
 					hold = true // keep holding, auto-fires after hold_s
 				}
 				fire[laserSlot] = hold
-			} else if lw.Cooldown <= 0.05 && tLOS && targetDist < rng-10 {
+			} else if lw.Cooldown <= 0.05 && (tLOS || (optDuelCover && b.duelPhase > 0 && target.Kind == "mech")) && targetDist < rng-10 {
 				fire[laserSlot] = true // start charging
 				b.laserHoldT = b.t
 			}
@@ -714,7 +743,45 @@ func (b *Brain) Act(o *Obs) *Action {
 		b.mode = "fight"
 		strafe = true
 		tp := target.Pos
-		if !tLOS || targetDist > prefRange+35 {
+		duelHandled := false
+		if optDuelCover {
+			gunDown := gunSlot < 0 || o.Self.Weapons[gunSlot].Reload > 0 || o.Self.Weapons[gunSlot].Ammo <= 0
+			laserReady := laserSlot >= 0 && (o.Self.Weapons[laserSlot].Cooldown < 0.3 || o.Self.Weapons[laserSlot].Charge > 0)
+			laserFull := laserSlot < 0 || o.Self.Weapons[laserSlot].Charge >= b.wstat(o, "laser", "charge", 0.75)-0.05 || o.Self.Weapons[laserSlot].Cooldown > 0.3
+			switch b.duelPhase {
+			case 0:
+				if tLOS && gunDown && !laserReady && targetDist > 25 {
+					if c := b.nearCover(o, tp, safeInZone, []float64{5, 9, 13}); c != nil {
+						b.duelPhase, b.duelSpot, b.duelT, b.duelCover = 1, [2]float64{x, y}, b.t, *c
+					}
+				}
+			case 1:
+				if (!gunDown && laserFull) || b.t-b.duelT > 5 {
+					b.duelPhase = 2
+				}
+			case 2:
+				if tLOS || hyp(x, y, b.duelSpot[0], b.duelSpot[1]) < 2.5 || b.t-b.duelT > 9 {
+					b.duelPhase = 0
+				}
+			}
+			switch b.duelPhase {
+			case 1:
+				g := b.duelCover
+				goal = &g
+				b.mode = "duel-cover"
+				strafe = false
+				duelHandled = true
+			case 2:
+				g := b.duelSpot
+				goal = &g
+				b.mode = "duel-return"
+				strafe = false
+				duelHandled = true
+			}
+		}
+		if duelHandled {
+			// handled above
+		} else if !tLOS || targetDist > prefRange+35 {
 			g := [2]float64{tp[0], tp[1]}
 			goal = &g
 		} else if targetDist < prefRange-30 && prefRange > 40 {
@@ -742,6 +809,54 @@ func (b *Brain) Act(o *Obs) *Action {
 			goal = g
 			b.mode = "get-weapon"
 			strafe = false
+		}
+	}
+	if optLootFight && !zoneUrgent && b.mode != "get-weapon" && b.mode != "flee" && b.mode != "retreat" && hpFrac > 0.15 {
+		lim := 35.0
+		if target == nil || !tLOS {
+			lim = 70
+		}
+		var best *[2]float64
+		bd := lim
+		for _, c := range b.seenCubes {
+			d := hyp(x, y, c.pos[0], c.pos[1])
+			if d < bd && safeInZone(c.pos[0], c.pos[1]) && math.Abs(c.pos[2]-z) < 3.5 {
+				bd = d
+				g := [2]float64{c.pos[0], c.pos[1]}
+				best = &g
+			}
+		}
+		if best != nil {
+			goal = best
+			b.mode = "get-cube"
+			strafe = false
+		}
+	}
+	if optDropPrio && !zoneUrgent && b.mode != "flee" {
+		walk := b.stat(o, "walk_speed", 11.7)
+		for _, d := range o.Drops {
+			if d.Holder != nil && *d.Holder != me.ID && d.Progress > 2.5 {
+				continue
+			}
+			dist := hyp(x, y, d.Pos[0], d.Pos[1])
+			if dist > 260 || dist/walk > d.LandsIn+20 || !safeInZone(d.Pos[0], d.Pos[1]) {
+				continue
+			}
+			if dist/walk < d.LandsIn-25 {
+				continue // far too early: keep fighting/looting for now
+			}
+			g := [2]float64{d.Pos[0], d.Pos[1]}
+			// walk to the ring and hold near its centre (strafing could carry us out and reset the capture)
+			strafe = false
+			if dist > 2.5 {
+				goal = &g
+			} else {
+				goal = nil
+				moveScale = 0
+			}
+			b.mode = "supply-drop"
+			boost = dist > 40 && me.Energy > 40
+			break
 		}
 	}
 	if optFightBoost && b.mode == "fight" && me.Energy > 60 {
@@ -785,7 +900,10 @@ func (b *Brain) Act(o *Obs) *Action {
 				}
 			}
 			s := 1
-			if weaponPrio(o.Self.Weapons[1].Kind) >= weaponPrio(kind) {
+			if gunSwappable(o) && weaponPrio(kind) >= 2 && slotOf(o, kind) < 0 {
+				g := 0
+				act.Drop = &g
+			} else if weaponPrio(o.Self.Weapons[1].Kind) >= weaponPrio(kind) {
 				act.Take = nil
 			} else if o.Self.Weapons[1].Charge > 0 {
 				act.Take = nil
@@ -1188,7 +1306,7 @@ func (b *Brain) reachablePickup(o *Obs) *int {
 	var cs []c
 	for _, p := range o.Pickups {
 		pr := weaponPrio(p.Kind)
-		if pr == 0 || slotOf(o, p.Kind) >= 0 || (!empty && pr <= cur) {
+		if pr == 0 || slotOf(o, p.Kind) >= 0 || (!empty && pr <= cur && !(gunSwappable(o) && pr >= 2)) {
 			continue
 		}
 		d := hyp(x, y, p.Pos[0], p.Pos[1])
@@ -1298,7 +1416,11 @@ func (b *Brain) rushGoal(o *Obs, safe func(x, y float64) bool) *[2]float64 {
 	bs := math.Inf(1)
 	for id, pm := range b.seenPicks {
 		pr := weaponPrio(pm.kind)
-		if pr < 2 || pr <= cur || slotOf(o, pm.kind) >= 0 {
+		minPr := 2
+		if optRushAny && cur == 0 {
+			minPr = 1
+		}
+		if pr < minPr || slotOf(o, pm.kind) >= 0 || (pr <= cur && !(gunSwappable(o) && pr >= 2)) {
 			continue
 		}
 		if ft, ok := b.takeFail[id]; ok && b.t-ft < 5 {
@@ -1319,4 +1441,43 @@ func (b *Brain) rushGoal(o *Obs, safe func(x, y float64) bool) *[2]float64 {
 		}
 	}
 	return best
+}
+
+// nearCover: closest standable point within the given radii that the threat can't see.
+func (b *Brain) nearCover(o *Obs, threat [3]float64, safe func(x, y float64) bool, radii []float64) *[2]float64 {
+	x, y := o.Self.Pos[0], o.Self.Pos[1]
+	teye := [3]float64{threat[0], threat[1], threat[2] + 8}
+	for _, r := range radii {
+		var best *[2]float64
+		bd := math.Inf(1)
+		for k := 0; k < 16; k++ {
+			a := float64(k) * math.Pi / 8
+			px, py := x+math.Cos(a)*r, y+math.Sin(a)*r
+			if !b.w.Standable(px, py) || !safe(px, py) || !b.w.WalkLine(x, y, px, py) {
+				continue
+			}
+			pz := b.w.Surf(px, py)
+			if b.w.Clear(teye, [3]float64{px, py, pz + 6}, 1, 1) {
+				continue
+			}
+			d := 60 - hyp(px, py, threat[0], threat[1]) // prefer not moving toward the threat
+			if d < bd {
+				bd = d
+				g := [2]float64{px, py}
+				best = &g
+			}
+		}
+		if best != nil {
+			return best
+		}
+	}
+	return nil
+}
+
+// gunSwappable: with two-specials on, holding gun + a special means the gun slot is open for the other special.
+func gunSwappable(o *Obs) bool {
+	if !optTwoSpecial || len(o.Self.Weapons) < 2 || o.Self.Weapons[0] == nil || o.Self.Weapons[1] == nil {
+		return false
+	}
+	return o.Self.Weapons[0].Kind == "gun" && weaponPrio(o.Self.Weapons[1].Kind) >= 2
 }
