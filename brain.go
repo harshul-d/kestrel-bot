@@ -45,6 +45,11 @@ var (
 	optNoMortar   = envBool("MECH_NO_MORTAR", false)    // never carry a mortar (cook-off: lasers hit its holder +60%)
 	optFocus      = envBool("MECH_FOCUS", false)        // stick to a visible target, finish the wounded up close, release a lethal laser early
 	optNoChase    = envBool("MECH_NO_CHASE", false)     // don't walk after a target that broke line of sight (until late)
+	optFFA        = envBool("MECH_FFA", false)          // detect a free-for-all (mechs dying that we didn't kill) and switch to the FFA profile
+	optFFAThreat  = envBool("MECH_FFA_THREAT", true)    // FFA profile: shoot only mechs that threaten us
+	optFFAFleeLow = envFloat("MECH_FFA_FLEE_LOW", 0.5)  // FFA profile: flee a losing trade below this HP
+	optFFAFleeHP  = envFloat("MECH_FFA_FLEE_HP", 0.8)   // FFA profile: flee 2+ attackers below this HP
+	optFFAQuiet   = envBool("MECH_FFA_QUIET", true)     // FFA profile: no crate/drone shooting (noise) with enemies seen in the last 10 s
 	optCrateHunt  = envFloat("MECH_CRATE_HUNT", 0)      // when idle, walk toward seen crates this close (m); 0 = off
 )
 
@@ -99,6 +104,10 @@ type Brain struct {
 	// combat state
 	targetID     int
 	focusID      int
+	myKills      int
+	startAlive   int
+	ffaTicks     int
+	ffa          bool // latched: this match is a free-for-all
 	focusT       float64
 	lastDamagedT float64
 	lastDealtT   float64
@@ -272,6 +281,10 @@ func (b *Brain) Act(o *Obs) *Action {
 			}
 		case "hit":
 			b.lastDealtT = b.t
+		case "kill":
+			if e.Target < 100 { // mechs are 0-15, drones 100+
+				b.myKills++
+			}
 		case "take_failed":
 			var id int
 			if json.Unmarshal(e.ID, &id) == nil {
@@ -288,6 +301,23 @@ func (b *Brain) Act(o *Obs) *Action {
 			}
 		}
 	}
+
+	// ---- practice or free-for-all? House bots never fight each other, so in practice every death is ours.
+	if optFFA && !b.ffa {
+		if b.startAlive == 0 {
+			b.startAlive = o.Alive
+		}
+		if b.startAlive-o.Alive-b.myKills >= 3 {
+			b.ffaTicks++
+		} else {
+			b.ffaTicks = 0
+		}
+		if b.ffaTicks >= 5 {
+			b.ffa = true
+		}
+	}
+	threatOnly := optThreatOnly || (b.ffa && optFFAThreat)
+	quiet := b.ffa && optFFAQuiet && b.hasRecentTrack(10)
 
 	// ---- upgrades ----
 	if o.Offer != nil && len(o.Offer.Choices) > 0 {
@@ -364,7 +394,7 @@ func (b *Brain) Act(o *Obs) *Action {
 	for i := range enemies {
 		e := &enemies[i]
 		d := hyp(x, y, e.Pos[0], e.Pos[1])
-		if optThreatOnly && !b.isThreat(e, x, y, d) {
+		if threatOnly && !b.isThreat(e, x, y, d) {
 			continue
 		}
 		l := los(*e)
@@ -407,7 +437,7 @@ func (b *Brain) Act(o *Obs) *Action {
 	hpFrac := me.HP / math.Max(1, me.MaxHP)
 
 	// NPCs as targets when no mechs around
-	if optNPC && target == nil && hpFrac > optNPCHP && hpFrac >= optRegenHP {
+	if optNPC && target == nil && hpFrac > optNPCHP && hpFrac >= optRegenHP && !quiet {
 		for i := range npcs {
 			n := &npcs[i]
 			d := hyp(x, y, n.Pos[0], n.Pos[1])
@@ -625,7 +655,7 @@ func (b *Brain) Act(o *Obs) *Action {
 		if laserSlot >= 0 && o.Self.Weapons[laserSlot].Charge > 0 {
 			fire[laserSlot] = false
 		}
-		if optCrates && b.t-b.lastDamagedT > 3 && hpFrac >= optRegenHP {
+		if optCrates && b.t-b.lastDamagedT > 3 && hpFrac >= optRegenHP && !quiet {
 			bestD := 140.0
 			for i := range o.Crates {
 				c := &o.Crates[i]
@@ -1083,6 +1113,9 @@ func (b *Brain) Act(o *Obs) *Action {
 	act.Aim = [2]float64{round4(wrap(aimYaw)), round4(clamp(aimPitch, b.stat(o, "min_pitch", -0.7), b.stat(o, "max_pitch", 1.3)))}
 	act.Fire = fire
 	b.dbg.Label = b.mode
+	if b.ffa {
+		b.dbg.Label += " [ffa]"
+	}
 	if len(b.dbg.Lines) > 0 || b.dbg.Label != "" {
 		d := b.dbg
 		act.Debug = &d
@@ -1455,10 +1488,14 @@ func (b *Brain) shouldFlee(o *Obs, target *Actor, enemies []Actor, hpFrac float6
 			n++
 		}
 	}
-	if n >= 2 && hpFrac < optFleeHP {
+	fleeHP, fleeLow := optFleeHP, optFleeLow
+	if b.ffa {
+		fleeHP, fleeLow = optFFAFleeHP, optFFAFleeLow
+	}
+	if n >= 2 && hpFrac < fleeHP {
 		return true
 	}
-	if hpFrac < optFleeLow && target.HP > o.Self.HP*1.1 {
+	if hpFrac < fleeLow && target.HP > o.Self.HP*1.1 {
 		return true
 	}
 	return false
