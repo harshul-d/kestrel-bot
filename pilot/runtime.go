@@ -29,6 +29,16 @@ const runtimeIOFraction = 0.70
 // Deadline handed to the brain.
 const runtimeBrainFraction = 0.60
 
+// Absolute caps on the two deadlines above. The match container has one CPU that may be
+// slower than a development machine, and a background field build can delay the IO
+// goroutine by a scheduler slice, so the brain stops waiting for a pending path field at
+// runtimeBrainCapMs (the field stays pending and is used on a later tick) and the watchdog
+// answers with the fallback at runtimeIOCapMs. Decisions that finish sooner are unaffected.
+const (
+	runtimeBrainCapMs = 18.0
+	runtimeIOCapMs    = 24.0
+)
+
 type runtimeLine struct {
 	t    time.Time
 	line string
@@ -293,8 +303,8 @@ func Run(stdin io.Reader, stdout io.Writer) int {
 	if hello.Config.Bot.TickBudgetMs > 0 {
 		tickMs = hello.Config.Bot.TickBudgetMs
 	}
-	ioWait := time.Duration(tickMs * runtimeIOFraction * float64(time.Millisecond))
-	brainWait := time.Duration(tickMs * runtimeBrainFraction * float64(time.Millisecond))
+	ioWait := time.Duration(fmin(tickMs*runtimeIOFraction, runtimeIOCapMs) * float64(time.Millisecond))
+	brainWait := time.Duration(fmin(tickMs*runtimeBrainFraction, runtimeBrainCapMs) * float64(time.Millisecond))
 	maxLine := 65536
 	if hello.Config.Bot.MaxLineBytes > 0 {
 		maxLine = f2u(hello.Config.Bot.MaxLineBytes)

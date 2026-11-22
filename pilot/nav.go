@@ -2,6 +2,7 @@ package pilot
 
 import (
 	"math"
+	"runtime"
 	"slices"
 )
 
@@ -767,6 +768,7 @@ func (nav *Nav) fieldLimited(goals []struct {
 		cur = seeds[0].c
 	}
 	const mask = uint32(1)<<navPackCostBits - 1
+	popped := 0
 	for {
 		for sp < len(seeds) && uint64(seeds[sp].c) < uint64(cur)+uint64(bsz) {
 			nd, c := seeds[sp].nd, seeds[sp].c
@@ -798,6 +800,12 @@ func (nav *Nav) fieldLimited(goals []struct {
 		pending--
 		if d[v] != cur {
 			continue
+		}
+		// Field builds run in a background goroutine; on a single CPU, yield now and then
+		// so the IO loop's deadline timer is not held up behind a long search.
+		popped++
+		if popped&4095 == 0 {
+			runtime.Gosched()
 		}
 		for _, pe := range nav.rp[nav.rpFirst[v]:nav.rpFirst[v+1]] {
 			nd := cur + (pe & mask)
