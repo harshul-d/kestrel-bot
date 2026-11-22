@@ -1,3 +1,3 @@
-module mechbot
+module aurorapilot
 
-go 1.24
+go 1.26

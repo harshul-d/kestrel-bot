@@ -1,2 +1,7 @@
 .git
+out
+tools
+*.md
 *.exe
+*.jsonl
+LICENSE
