@@ -232,7 +232,8 @@ func (b *Brain) dpPick(obs *Obs, drop *struct {
 	if d.f2 > p.dpDist {
 		return nil
 	}
-	strongFight := tgt != nil && b.vxStrong(tgt) && obs.T-tgt.lastSeen < 1.0
+	// Do not abandon a live fight for a drop unless the ring is right here and the foe is weak.
+	strongFight := tgt != nil && obs.T-tgt.lastSeen < 1.0 && (b.vxStrong(tgt) || d.f2 > 40.0)
 	leave := hpf < p.dpLeaveHp && d.f2 < p.dpLeaveR
 	if leave || (!wantRetreat && !strongFight) {
 		return d
