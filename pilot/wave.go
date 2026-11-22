@@ -103,6 +103,11 @@ func (b *Brain) waveUpdate(obs *Obs, world *World, nav *Nav) {
 		return
 	}
 	t := obs.T
+	if t < b.p.prepFromS {
+		// Before the late game, idle time goes to roaming; no sheltered spot is held.
+		b.wave.prep = nil
+		return
+	}
 	z := &obs.Zone
 	if !(isFinite(z.NextRadius) && isFinite(z.NextCenter[0])) {
 		return

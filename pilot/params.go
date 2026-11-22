@@ -310,6 +310,7 @@ type Params struct {
 	tkRange            float64
 	tkKills            float64
 	prepPos            float64
+	prepFromS          float64
 	svSpot             float64
 	svMemoryS          float64
 	svLaserMult        float64
@@ -699,6 +700,7 @@ func paramsDefault() Params {
 		tkRange:                80.0,
 		tkKills:                4.0,
 		prepPos:                0.0,
+		prepFromS:              0.0,
 		svSpot:                 0.0,
 		svMemoryS:              4.0,
 		svLaserMult:            1.5,
@@ -1188,6 +1190,7 @@ func paramsFieldList(p *Params) []struct {
 		{"bu_dodge_energy", &p.buDodgeEnergy},
 		{"bu_regen_hp", &p.buRegenHp},
 		{"bu_regen_seen_s", &p.buRegenSeenS},
+		{"prep_from_s", &p.prepFromS},
 	}
 }
 
