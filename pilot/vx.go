@@ -91,7 +91,8 @@ func (b *Brain) vxUpdate(obs *Obs, world *World) {
 		e := up(tr.posAt(t), eyeH)
 		if hit || (dist(e, body) < 320.0 && world.sight(e, body)) {
 			n += 1
-			if b.vxStrong(tr) {
+			// kt_any: every mech with line on us counts toward kiting, not only strong ones.
+			if b.vxStrong(tr) || p.ktAny >= 0.5 {
 				ns += 1
 				if len(b.vx.eyes) < 6 {
 					b.vx.eyes = append(b.vx.eyes, e)

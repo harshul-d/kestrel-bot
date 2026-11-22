@@ -403,6 +403,7 @@ type Params struct {
 	buDodgeEnergy      float64
 	buRegenHp          float64
 	buRegenSeenS       float64
+	ktAny              float64
 }
 
 func paramsDefault() Params {
@@ -793,6 +794,7 @@ func paramsDefault() Params {
 		buDodgeEnergy:          15.0,
 		buRegenHp:              0.0,
 		buRegenSeenS:           3.0,
+		ktAny:                  0.0,
 	}
 }
 
@@ -1190,6 +1192,7 @@ func paramsFieldList(p *Params) []struct {
 		{"bu_dodge_energy", &p.buDodgeEnergy},
 		{"bu_regen_hp", &p.buRegenHp},
 		{"bu_regen_seen_s", &p.buRegenSeenS},
+		{"kt_any", &p.ktAny},
 		{"prep_from_s", &p.prepFromS},
 	}
 }
