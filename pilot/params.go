@@ -406,6 +406,7 @@ type Params struct {
 	brawlOn            float64
 	brawlBoostD        float64
 	brawlBoostE        float64
+	ktAny              float64
 }
 
 func paramsDefault() Params {
@@ -799,6 +800,7 @@ func paramsDefault() Params {
 		brawlOn:                0.0,
 		brawlBoostD:            45.0,
 		brawlBoostE:            0.35,
+		ktAny:                  0.0,
 	}
 }
 
@@ -1196,6 +1198,7 @@ func paramsFieldList(p *Params) []struct {
 		{"bu_dodge_energy", &p.buDodgeEnergy},
 		{"bu_regen_hp", &p.buRegenHp},
 		{"bu_regen_seen_s", &p.buRegenSeenS},
+		{"kt_any", &p.ktAny},
 		{"brawl_boost_e", &p.brawlBoostE},
 		{"brawl_boost_d", &p.brawlBoostD},
 		{"brawl_on", &p.brawlOn},
