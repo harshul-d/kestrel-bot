@@ -403,6 +403,14 @@ type Params struct {
 	buDodgeEnergy      float64
 	buRegenHp          float64
 	buRegenSeenS       float64
+	chokeOn            float64
+	chokeMaxD          float64
+	chokeQuietS        float64
+	chokeTravelS       float64
+	chokePeekS         float64
+	chokeBackS         float64
+	chokePeekD         float64
+	chokeBuildMs       float64
 }
 
 func paramsDefault() Params {
@@ -793,6 +801,14 @@ func paramsDefault() Params {
 		buDodgeEnergy:          15.0,
 		buRegenHp:              0.0,
 		buRegenSeenS:           3.0,
+		chokeOn:                0.0,
+		chokeMaxD:              120.0,
+		chokeQuietS:            10.0,
+		chokeTravelS:           14.0,
+		chokePeekS:             1.0,
+		chokeBackS:             1.2,
+		chokePeekD:             5.0,
+		chokeBuildMs:           2500.0,
 	}
 }
 
@@ -1190,6 +1206,14 @@ func paramsFieldList(p *Params) []struct {
 		{"bu_dodge_energy", &p.buDodgeEnergy},
 		{"bu_regen_hp", &p.buRegenHp},
 		{"bu_regen_seen_s", &p.buRegenSeenS},
+		{"choke_build_ms", &p.chokeBuildMs},
+		{"choke_peek_d", &p.chokePeekD},
+		{"choke_back_s", &p.chokeBackS},
+		{"choke_peek_s", &p.chokePeekS},
+		{"choke_travel_s", &p.chokeTravelS},
+		{"choke_quiet_s", &p.chokeQuietS},
+		{"choke_max_d", &p.chokeMaxD},
+		{"choke_on", &p.chokeOn},
 		{"prep_from_s", &p.prepFromS},
 	}
 }

@@ -148,6 +148,7 @@ type Brain struct {
 	cad        AimzCadence
 	cadUntil   float64
 	cadAxis    V2
+	choke      ChokeState
 }
 
 func brainNew(hello *Hello, shared *Shared) *Brain {
@@ -173,7 +174,20 @@ func brainWithParams(hello *Hello, shared *Shared, params Params) *Brain {
 			return &m
 		}()
 	}
+	var chokeSpots []ChokeSpot
+	if params.chokeOn > 0.0 {
+		chokeSpots = func() (s []ChokeSpot) {
+			defer func() {
+				if recover() != nil {
+					s = nil
+				}
+			}()
+			return chokeBuild(&shared.world, &shared.nav, time.Now().Add(time.Duration(fmax(params.chokeBuildMs, 0.0)*float64(time.Millisecond))))
+		}()
+		logf("choke spots: %d", len(chokeSpots))
+	}
 	return &Brain{
+		choke:  ChokeState{spots: chokeSpots},
 		cfg:    hello.Config,
 		p:      &params,
 		pFfa:   paramsLoadFfa(),
@@ -284,7 +298,9 @@ func (b *Brain) actInner(obs *Obs, budget *Budget) Action {
 	if obs.Offer != nil {
 		act.Pick = ptr(b.pickUpgrade(obs.Offer))
 	}
+	chokeUnreach := b.goalUnreachable && b.choke.active
 	b.decide(obs, world, nav)
+	b.chokeDecide(obs, world, chokeUnreach)
 	b.laserPre(obs, world, nav)
 	fc := b.fireControl(obs, world)
 	if y := b.gearSweep(obs, fc.target != nil || fc.fire[0] || fc.fire[1] || fc.charging); y != nil {
