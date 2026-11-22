@@ -12,6 +12,8 @@ type FfaFfa struct {
 	alive0 int64
 	kills  int64
 	sig    uint32
+	third  uint32 // beams by other mechs aimed away from us and not at a drone or crate
+	offSnd uint32 // observations with mid/far combat sounds from no mech we track
 	seenHp []struct {
 		f0 int64
 		f1 float64
@@ -69,7 +71,7 @@ func (f *FfaFfa) set(t float64, why uint8) {
 	}
 }
 
-func (f *FfaFfa) update(obs *Obs, tracks []Track, enabled bool) {
+func (f *FfaFfa) update(obs *Obs, tracks []Track, enabled bool, twoSig bool) {
 	t := obs.T
 	me := &obs.Me
 	if f.alive0 <= 0 {
@@ -105,7 +107,7 @@ func (f *FfaFfa) update(obs *Obs, tracks []Track, enabled bool) {
 		return
 	}
 	deaths := f.alive0 - obs.Alive
-	if t < 75.0 && deaths >= f.kills+2 {
+	if !twoSig && t < 75.0 && deaths >= f.kills+2 {
 		f.set(t, 1)
 	}
 	isNpc := func(id int64) bool {
@@ -236,7 +238,75 @@ func (f *FfaFfa) update(obs *Obs, tracks []Track, enabled bool) {
 	if len(f.seenHp) > 32 {
 		f.seenHp = append(f.seenHp[:0], f.seenHp[1:]...)
 	}
-	if f.sig >= 3 {
+	if twoSig {
+		for bi := range obs.Beams {
+			bm := &obs.Beams[bi]
+			if bm.By == me.Id || isNpc(bm.By) || len(bm.Path) < 2 {
+				continue
+			}
+			s0, e := bm.Path[0], bm.Path[len(bm.Path)-1]
+			if !(memoryAllFinite3(s0) && memoryAllFinite3(e)) || dist(e, me.Pos) < 30.0 {
+				continue
+			}
+			toMe := unit2(me.Pos[0]-s0[0], me.Pos[1]-s0[1])
+			toEnd := unit2(e[0]-s0[0], e[1]-s0[1])
+			if toMe[0]*toEnd[0]+toMe[1]*toEnd[1] > math.Cos(0.25) {
+				continue // a shot at us that stopped short (wall, range)
+			}
+			atLoot := false
+			for i := range tracks {
+				if tracks[i].kind == ActorKindNpc && dist(tracks[i].pos, e) < 12.0 {
+					atLoot = true
+					break
+				}
+			}
+			for i := range obs.Mechs {
+				if obs.Mechs[i].Kind == ActorKindNpc && dist(obs.Mechs[i].Pos, e) < 12.0 {
+					atLoot = true
+					break
+				}
+			}
+			for i := range obs.Crates {
+				if dist(obs.Crates[i].Pos, e) < 12.0 {
+					atLoot = true
+					break
+				}
+			}
+			if !atLoot {
+				f.third++
+			}
+		}
+		for si := range obs.Sounds {
+			s := &obs.Sounds[si]
+			if s.Dist == SoundDistNear || !(s.Kind == "gun" || s.Kind == "explosion" || s.Kind == "laser" || s.Kind == "mortar") {
+				continue
+			}
+			near := false
+			for i := range tracks {
+				tr := &tracks[i]
+				if tr.kind != ActorKindMech || t-tr.lastSeen > 3.0 {
+					continue
+				}
+				q := tr.posAt(t)
+				by := math.Atan2(q[1]-me.Pos[1], q[0]-me.Pos[0])
+				if math.Abs(wrap(s.Bearing-by)) < 0.6 {
+					near = true
+					break
+				}
+			}
+			if !near {
+				f.offSnd++
+				break
+			}
+		}
+		// Two independent signals, early in the match: at least two mechs died that we did not
+		// kill, and fighting we are not part of (other mechs seen taking damage that was not
+		// ours, a beam fired away from us at no drone or crate, or sustained combat sounds from
+		// where no tracked mech is). House bots in practice attack only us.
+		if t < 150.0 && deaths >= f.kills+2 && (f.sig >= 2 || f.third >= 1 || f.offSnd >= 10) {
+			f.set(t, 3)
+		}
+	} else if f.sig >= 3 {
 		f.set(t, 2)
 	}
 }

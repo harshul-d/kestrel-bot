@@ -100,7 +100,7 @@ func (b *Brain) sfHunter(tr *Track, t float64) bool {
 }
 
 func (b *Brain) sfHold(obs *Obs, tr *Track) bool {
-	if b.esHold(obs, tr) {
+	if b.esHold(obs, tr) || b.ffaBankHold(obs, tr) {
 		return true
 	}
 	p := b.p
