@@ -1,5 +1,17 @@
 package pilot
 
+// Prefer a quick elimination and keep pressure on a hunter between its shots.
+func (b *Brain) focusPriority(tr *Track, now float64) float64 {
+	wounded := fclamp(1-frac(tr.hp, tr.maxHp), 0, 1)
+	score := 135 * wounded * wounded
+	recent := fclamp(1-(now-tr.lastDmgT)/3, 0, 1)
+	score += 40 * recent
+	if b.target == (Tgt{kind: TgtKindMech, mech0: tr.id}) {
+		score += 55 * recent
+	}
+	return score
+}
+
 func (b *Brain) finishBonus(tr *Track) float64 {
 	f := frac(tr.hp, tr.maxHp)
 	if f < b.p.finishHp {

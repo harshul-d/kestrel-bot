@@ -578,6 +578,7 @@ func (b *Brain) chooseTarget(obs *Obs, zi *StrategyZoneInfo) *Track {
 			}
 		}
 		s := 60.0*(1.0-d/200.0) + 80.0*(1.0-frac(tr.hp, tr.maxHp))
+		s += b.focusPriority(tr, t)
 		if attacker {
 			s += 100.0 + tr.dmgToUs*0.1
 		}

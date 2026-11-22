@@ -171,6 +171,9 @@ func (b *Brain) pickFireTarget(obs *Obs, world *World, muzzle V3) *struct {
 			allow0 = b.mode != ModeRetreat || attacker || (aligned && clear_) || d < 60.0
 		}
 		allow := allow0 && !b.holdFire(obs, d, tr.hp)
+		if allow && clear_ && d < maxRange {
+			s += b.focusPriority(tr, t)
+		}
 		if best == nil || s > best.f0 {
 			best = &cand{s, at, allow}
 		}
