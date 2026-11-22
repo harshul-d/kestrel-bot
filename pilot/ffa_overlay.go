@@ -10,7 +10,7 @@ import (
 // paramsFfaJSON holds the settings that replace the playing settings once a free-for-all is
 // detected (same keys as paramsShippedJSON; only the keys that differ are needed).
 // Empty means no free-for-all settings: detection stays off and play is unchanged.
-const paramsFfaJSON = ``
+const paramsFfaJSON = `{"retreat_hp":0.55,"retreat_multi_hp":0.85,"retreat_press_hp":0.85,"retreat_exit_hp":0.9,"flee_dist":90}`
 
 // paramsLoadFfa returns the free-for-all settings (playing settings with the overlay applied),
 // or nil when there is no overlay. MECH_FFA_PARAMS names an overlay file that replaces the
