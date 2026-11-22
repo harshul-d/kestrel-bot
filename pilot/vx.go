@@ -48,15 +48,10 @@ func (b *Brain) spareTr(tr *Track, t float64, pos V3) bool {
 	return t-tr.lastDmgT > 5.0 || b.gearHarmless(tr, t, dist(tr.posAt(t), pos))
 }
 
-func (b *Brain) vxUpdate(obs *Obs, world *World) {
-	p := b.p
-	if p.rgOn < 0.5 && p.ktOn < 0.5 {
+// Remember the defeated mech before memory removes it from the live tracks.
+func (b *Brain) vxRememberKills(obs *Obs) {
+	if b.p.rgOn < 0.5 || b.p.rgStrong < 0.5 || b.vx.strongKill {
 		return
-	}
-	t := obs.T
-	me := &obs.Me
-	if b.vx.lastLineT == 0.0 {
-		b.vx.lastLineT = -1e9
 	}
 	for i := range obs.Events {
 		ev := &obs.Events[i]
@@ -67,11 +62,24 @@ func (b *Brain) vxUpdate(obs *Obs, world *World) {
 				if tr.kind == ActorKindMech && tr.id == k.Target {
 					if b.vxStrong(tr) {
 						b.vx.strongKill = true
+						return
 					}
 					break
 				}
 			}
 		}
+	}
+}
+
+func (b *Brain) vxUpdate(obs *Obs, world *World) {
+	p := b.p
+	if p.rgOn < 0.5 && p.ktOn < 0.5 {
+		return
+	}
+	t := obs.T
+	me := &obs.Me
+	if b.vx.lastLineT == 0.0 {
+		b.vx.lastLineT = -1e9
 	}
 	body := up(me.Pos, fmax(me.Stats.Height, 1.0)*0.6)
 	eyeH := b.cfg.Mech.EyeHeight
@@ -140,7 +148,7 @@ func (b *Brain) kiteGoal(obs *Obs, world *World, nav *Nav, zi *StrategyZoneInfo)
 	pos := obs.Me.Pos
 	if kg := b.vx.kiteGoal; kg != nil {
 		q, tq := kg.f0, kg.f1
-		if t-tq < 0.5 && dist(q, pos) > 6.0 {
+		if t-tq < 0.5 && dist(q, pos) > 6.0 && b.zoneMarginOnArrival(obs, q) >= 4.0 {
 			return Goal{kind: GoalKindNav, navPos: q, navArrive: 2.0}
 		}
 	}
@@ -182,6 +190,9 @@ func (b *Brain) kiteGoal(obs *Obs, world *World, nav *Nav, zi *StrategyZoneInfo)
 		}
 		q := *qp
 		if dist(q, q0) > 8.0 || !(isFinite(q[0]) && isFinite(q[1]) && isFinite(q[2])) || dist2v(q, zi.curC) > zi.curR-12.0 {
+			continue
+		}
+		if b.zoneMarginOnArrival(obs, q) < 4.0 {
 			continue
 		}
 		seenN := 0

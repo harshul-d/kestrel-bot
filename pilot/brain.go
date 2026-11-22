@@ -258,6 +258,7 @@ func (b *Brain) actInner(obs *Obs, budget *Budget) Action {
 	nav := &shared.nav
 	b.econUpdate(obs)
 	b.waveCount(obs)
+	b.vxRememberKills(obs)
 	b.mem.rangeBan = b.p.takeRangeBan
 	b.mem.update(obs, world, &b.cfg)
 	b.sfUpdate(obs, world)

@@ -41,6 +41,25 @@ func strategyZoneAt(z *ZoneObs, now, tau float64, phaseStart bool) struct {
 	}
 }
 
+func (b *Brain) zoneMarginOnArrival(obs *Obs, q V3) float64 {
+	// Allow for a detour and a moment in cover before the next move.
+	walk := fmax(obs.Me.Stats.WalkSpeed, 1.0)
+	t := obs.T + 1.3*dist2(obs.Me.Pos, q)/walk + 2.0
+	z := strategyZoneAt(&obs.Zone, obs.T, t, b.zoneB)
+	return z.f1 - dist2v(q, z.f0)
+}
+
+func (b *Brain) regroupNeedsRotation(obs *Obs, zi *StrategyZoneInfo) bool {
+	if !b.vx.regroup || !zi.closing || b.cfg.Mech.RegenPerS <= 0.0 {
+		return false
+	}
+	me := &obs.Me
+	untilRegen := fmax(b.cfg.Mech.RegenDelay-(obs.T-fmax(b.mem.lastDamageT, b.mem.lastDealtT)), 0.0)
+	healTime := fmax(me.MaxHp*b.p.rgExit-me.Hp, 0.0) / b.cfg.Mech.RegenPerS
+	z := strategyZoneAt(&obs.Zone, obs.T, obs.T+untilRegen+healTime+b.p.zoneLeadS, b.zoneB)
+	return dist2v(me.Pos, z.f0) > z.f1-b.p.zoneEdge
+}
+
 type StrategyLootPick struct {
 	id    int64
 	pos   V3
@@ -389,6 +408,10 @@ func (b *Brain) decide(obs *Obs, world *World, nav *Nav) {
 	} else if zi.urgent {
 		mode = ModeZone
 		goal = Goal{kind: GoalKindField, fieldCenter: obs.Zone.NextCenter, fieldArrive: 1.5}
+	} else if b.regroupNeedsRotation(obs, &zi) {
+		mode = ModeZone
+		goal = Goal{kind: GoalKindField, fieldCenter: z.NextCenter, fieldArrive: 1.5}
+		target = Tgt{}
 	} else if b.vx.regroup || b.vx.kite {
 		mode = ModeRetreat
 		if b.vx.kite {
@@ -896,7 +919,7 @@ func (b *Brain) coverGoal(obs *Obs, world *World, nav *Nav, zi *StrategyZoneInfo
 	pos := me.Pos
 	if b.cover != nil {
 		c, tc := b.cover.f0, b.cover.f1
-		if t-tc < p.coverPeriodS {
+		if t-tc < p.coverPeriodS && b.zoneMarginOnArrival(obs, c) >= 4.0 {
 			return Goal{kind: GoalKindNav, navPos: c, navArrive: 1.5}
 		}
 	}
@@ -906,24 +929,28 @@ func (b *Brain) coverGoal(obs *Obs, world *World, nav *Nav, zi *StrategyZoneInfo
 		return Goal{}
 	}
 	h := fmax(me.Stats.Height, 1.0)
-	hidden := func(q V3) bool {
+	exposure := func(q V3) int {
+		seen := 0
 		for _, e := range eyes {
-			if !(!world.sight(e, up(q, h*0.5)) && !world.sight(e, up(q, h*0.92))) {
-				return false
+			if world.sight(e, up(q, h*0.5)) || world.sight(e, up(q, h*0.92)) {
+				seen++
 			}
 		}
-		return true
+		return seen
 	}
 	z := &obs.Zone
+	currentExposure := exposure(pos)
+	bestExposure := len(eyes) + 1
 	var best *struct {
 		f0 float64
 		f1 V3
 	}
 	consider := func(q V3, bonus float64) {
-		if dist2v(q, zi.curC) > zi.curR-12.0 {
+		if dist2v(q, zi.curC) > zi.curR-12.0 || b.zoneMarginOnArrival(obs, q) < 4.0 {
 			return
 		}
-		if !hidden(q) {
+		seen := exposure(q)
+		if seen > bestExposure || (seen > 0 && seen >= currentExposure) {
 			return
 		}
 		outNext := fmax(dist2v(q, z.NextCenter)-z.NextRadius+10.0, 0.0)
@@ -932,7 +959,8 @@ func (b *Brain) coverGoal(obs *Obs, world *World, nav *Nav, zi *StrategyZoneInfo
 			nearThreat = fmin(nearThreat, dist2(e, q))
 		}
 		s := dist(q, pos) + 0.6*outNext - 0.15*fmin(nearThreat, 150.0) - bonus
-		if best == nil || s < best.f0 {
+		if best == nil || seen < bestExposure || s < best.f0 {
+			bestExposure = seen
 			best = &struct {
 				f0 float64
 				f1 V3
@@ -978,6 +1006,10 @@ func (b *Brain) coverGoal(obs *Obs, world *World, nav *Nav, zi *StrategyZoneInfo
 		q = q0
 		if sq := nav.snap(q0); sq != nil && memoryAllFinite3(*sq) {
 			q = *sq
+		}
+		if b.zoneMarginOnArrival(obs, q) < 4.0 {
+			b.cover = nil
+			return Goal{kind: GoalKindField, fieldCenter: z.NextCenter, fieldArrive: 1.5}
 		}
 	}
 	b.cover = &struct {
