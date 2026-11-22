@@ -195,6 +195,21 @@ func (o *runtimeOut) fallbackHold(tick int64, hold [2]bool) Action {
 	return a
 }
 
+// runtimeSafeParse parses one server line; a panic in the decoder becomes a parse error, so a
+// malformed line can never stop the loop (the observation is then answered with the fallback).
+func runtimeSafeParse(line string) (kind string, obs *Obs, end *End, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			kind, obs, end, err = "", nil, nil, fmt.Errorf("parse panic: %v", r)
+		}
+	}()
+	kind, _, obs, end, err = protoParseServerMsg([]byte(line))
+	if err == nil && kind == "obs" && obs == nil {
+		err = fmt.Errorf("empty observation")
+	}
+	return
+}
+
 // runtimeRawObsTick peeks the tick of a line that did not parse as an observation.
 func runtimeRawObsTick(line string) (int64, bool) {
 	var v map[string]any
@@ -317,86 +332,108 @@ func Run(stdin io.Reader, stdout io.Writer) int {
 				break more
 			}
 		}
-		// Newest observation wins; "end" anywhere ends the process.
-		var newestT time.Time
-		var newestObs *Obs
-		newestTick, haveNewest, newestBad := int64(0), false, false
-		ended := false
-		for _, l := range lines {
-			kind, _, obs, end, err := protoParseServerMsg([]byte(l.line))
-			if err == nil {
-				switch kind {
-				case "obs":
-					newestT, newestObs, haveNewest, newestBad = l.t, obs, true, false
-				case "end":
-					logf("end: place %d kills %d", end.Place, end.Kills)
-					ended = true
+		stop := func() (stop bool) {
+			// Any panic in this iteration is contained: answer the newest tick we know with the
+			// fallback action and keep reading.
+			lastTick := int64(-1)
+			defer func() {
+				if r := recover(); r != nil {
+					panics++
+					logf("loop panic: %v", r)
+					if lastTick >= 0 {
+						out.action(out.fallback(lastTick))
+					}
+					stop = false
 				}
-				continue
-			}
-			if tick, ok := runtimeRawObsTick(l.line); ok {
-				logf("obs parse error at tick %d: %v", tick, err)
-				newestT, newestObs, newestTick, haveNewest, newestBad = l.t, nil, tick, true, true
-			} else if strings.Contains(l.line, "\"end\"") {
-				ended = true
-			}
-		}
-		if ended {
-			break
-		}
-		if !haveNewest {
-			continue
-		}
-		if newestBad {
-			out.action(out.fallback(newestTick))
-			fallbacks++
-			continue
-		}
-		obs := newestObs
-		tick := obs.Tick
-		var hold [2]bool
-		for i, w := range obs.Me.Weapons {
-			if i >= 2 {
-				break
-			}
-			hold[i] = w != nil && w.Kind == WeaponKindLaser && w.Charge > 0
-		}
-		deadline := newestT.Add(ioWait)
-		jobs <- runtimeJob{obs: obs, budget: budgetUntil(newestT.Add(brainWait))}
-		var action *Action
-	wait:
-		for {
-			now := time.Now()
-			if !now.Before(deadline) {
-				break
-			}
-			timer.Reset(deadline.Sub(now))
-			select {
-			case d := <-done:
-				if !timer.Stop() {
-					<-timer.C
-				}
-				if d.tick != tick {
+			}()
+			// Newest observation wins; "end" anywhere ends the process.
+			var newestT time.Time
+			var newestObs *Obs
+			newestTick, haveNewest, newestBad := int64(0), false, false
+			ended := false
+			for _, l := range lines {
+				kind, obs, end, err := runtimeSafeParse(l.line)
+				if err == nil {
+					switch kind {
+					case "obs":
+						newestT, newestObs, haveNewest, newestBad = l.t, obs, true, false
+					case "end":
+						if end != nil {
+							logf("end: place %d kills %d", end.Place, end.Kills)
+						}
+						ended = true
+					}
 					continue
 				}
-				if d.panicked {
-					panics++
-				} else {
-					a := d.act
-					action = &a
+				if tick, ok := runtimeRawObsTick(l.line); ok {
+					logf("obs parse error at tick %d: %v", tick, err)
+					newestT, newestObs, newestTick, haveNewest, newestBad = l.t, nil, tick, true, true
+				} else if strings.Contains(l.line, "\"end\"") {
+					ended = true
 				}
-				break wait
-			case <-timer.C:
-				break wait
 			}
-		}
-		if action != nil {
-			answered++
-			out.action(*action)
-		} else {
-			fallbacks++
-			logf("fallback at tick %d", tick)
-			out.action(out.fallbackHold(tick, hold))
+			if ended {
+				return true
+			}
+			if !haveNewest {
+				return false
+			}
+			if newestBad {
+				out.action(out.fallback(newestTick))
+				fallbacks++
+				return false
+			}
+			obs := newestObs
+			tick := obs.Tick
+			lastTick = tick
+			var hold [2]bool
+			for i, w := range obs.Me.Weapons {
+				if i >= 2 {
+					break
+				}
+				hold[i] = w != nil && w.Kind == WeaponKindLaser && w.Charge > 0
+			}
+			deadline := newestT.Add(ioWait)
+			jobs <- runtimeJob{obs: obs, budget: budgetUntil(newestT.Add(brainWait))}
+			var action *Action
+		wait:
+			for {
+				now := time.Now()
+				if !now.Before(deadline) {
+					break
+				}
+				timer.Reset(deadline.Sub(now))
+				select {
+				case d := <-done:
+					if !timer.Stop() {
+						<-timer.C
+					}
+					if d.tick != tick {
+						continue
+					}
+					if d.panicked {
+						panics++
+					} else {
+						a := d.act
+						action = &a
+					}
+					break wait
+				case <-timer.C:
+					break wait
+				}
+			}
+			if action != nil {
+				answered++
+				out.action(*action)
+			} else {
+				fallbacks++
+				logf("fallback at tick %d", tick)
+				out.action(out.fallbackHold(tick, hold))
+			}
+			return false
+		}()
+		if stop {
+			break
 		}
 	}
 	logf("exit: answered %d, fallbacks %d, panics %d", answered, fallbacks, panics)
