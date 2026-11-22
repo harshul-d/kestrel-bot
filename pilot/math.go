@@ -154,7 +154,7 @@ func interceptTime(p, v V3, s float64) *float64 {
 }
 
 // lead returns the aim point (relative to the shooter) and flight time for a constant-speed shot.
-func lead(p, v, acc V3, s, latency, accGain, accT float64) *struct {
+func lead(p, v, acc V3, s, latency, accGain, accT, muzzleOffset float64) *struct {
 	f0 V3
 	f1 float64
 } {
@@ -165,11 +165,23 @@ func lead(p, v, acc V3, s, latency, accGain, accT float64) *struct {
 	}
 	t := *tp
 	pt := add(p0, scale(v, t))
-	if accGain > 0.0 {
-		for i := 0; i < 3; i++ {
-			ta := fmin(t, accT)
-			pt = add(add(p0, scale(v, t)), scale(acc, 0.5*accGain*ta*ta))
-			t = len_(pt) / s
+	speedSq := v[0]*v[0] + v[1]*v[1]
+	omega := 0.0
+	if speedSq > 9 {
+		omega = fclamp(accGain*(v[0]*acc[1]-v[1]*acc[0])/speedSq, -3, 3)
+	}
+	for i := 0; i < 3; i++ {
+		t = fmax(0, len_(pt)-muzzleOffset) / s
+		horizon := t + latency
+		pt = add(p, scale(v, horizon))
+		if math.Abs(omega) > 0.01 {
+			// Follow the measured turn briefly, then continue along its tangent.
+			bend := fmin(horizon, accT)
+			sin, cos := math.Sincos(omega * bend)
+			forward := sin/omega + (horizon-bend)*cos
+			side := (1-cos)/omega + (horizon-bend)*sin
+			pt[0] = p[0] + v[0]*forward - v[1]*side
+			pt[1] = p[1] + v[1]*forward + v[0]*side
 		}
 	}
 	if isFinite(t) && isFinite(pt[0]) && isFinite(pt[1]) && isFinite(pt[2]) {

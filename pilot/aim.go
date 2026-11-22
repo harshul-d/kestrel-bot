@@ -412,9 +412,10 @@ func (b *Brain) fireControl(obs *Obs, world *World) AimFireOut {
 	tolP := math.Atan2(tg.height*0.5*p.aimTol, d)
 
 	var gun *struct {
-		f0 int
-		f1 V2
-		f2 bool
+		f0    int
+		f1    V2
+		f2    bool
+		point V3
 	}
 	var laser *int
 	var lightning *int
@@ -441,7 +442,7 @@ func (b *Brain) fireControl(obs *Obs, world *World) AimFireOut {
 			} else {
 				lg = p.accGain
 			}
-			if ld := lead(rel, tg.vel, acc, fmax(w.Stats.Speed, 1.0), p.latency, lg, p.accTime); ld != nil {
+			if ld := lead(rel, tg.vel, acc, fmax(w.Stats.Speed, 1.0), p.latency, lg, p.accTime, st.Radius+0.5); ld != nil {
 				pt, tf := ld.f0, ld.f1
 				pzOk := true
 				if zon {
@@ -458,10 +459,11 @@ func (b *Brain) fireControl(obs *Obs, world *World) AimFireOut {
 				}
 				ok := pzOk && len_(pt) <= w.Stats.Range*p.gunRangeFrac && world.ray(muzzle, add(muzzle, pt)) == nil
 				gun = &struct {
-					f0 int
-					f1 V2
-					f2 bool
-				}{i, dirToAim(pt), ok}
+					f0    int
+					f1    V2
+					f2    bool
+					point V3
+				}{i, dirToAim(pt), ok, pt}
 			}
 		case WeaponKindLaser:
 			laser = ptr(i)
@@ -549,8 +551,13 @@ func (b *Brain) fireControl(obs *Obs, world *World) AimFireOut {
 				out.armed = true
 			}
 			if allow && ok && w.Ammo > 0.0 && w.Reload <= 0.0 && on(a, tolY, tolP) {
-				out.fire[i] = true
-				if p.aimzOn > 0.0 && !tg.fixed {
+				// Check the slewed barrel's path at the predicted body, including cover.
+				dir := aimDir(pred[0], pred[1])
+				hit := scale(dir, dot(gun.point, dir))
+				offset := sub(hit, gun.point)
+				out.fire[i] = math.Hypot(offset[0], offset[1]) <= tg.radius+b.cfg.Projectile.GunRadius &&
+					math.Abs(offset[2]) <= tg.height*0.5 && world.ray(muzzle, add(muzzle, hit)) == nil
+				if out.fire[i] && p.aimzOn > 0.0 && !tg.fixed {
 					b.aimz.noteFire(t, tg.feet)
 				}
 			}
