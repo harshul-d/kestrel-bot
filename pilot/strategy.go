@@ -198,10 +198,14 @@ func (b *Brain) zoneInfo(obs *Obs, world *World, nav *Nav) StrategyZoneInfo {
 	if dPath != nil {
 		detourS = fmax(*dPath-straight, 0.0) / walk
 	}
+	slack := p.zoneSlackS
+	if b.ffaBanking(t) {
+		slack += p.ffaBankSlack
+	}
 	urgent := !obs.Me.InZone ||
 		outNow > -p.zoneEdge ||
 		(tHit-t) < p.zoneLeadS+detourS ||
-		(!insideNext && (z.ShrinkEnd-t) < needS+p.zoneSlackS)
+		(!insideNext && (z.ShrinkEnd-t) < needS+slack)
 	closing := !insideNext && (z.ShrinkStart-t) < 25.0
 	return StrategyZoneInfo{urgent: urgent, safe: safe, curC: curC, curR: curR, closing: closing}
 }
@@ -589,6 +593,7 @@ func (b *Brain) chooseTarget(obs *Obs, zi *StrategyZoneInfo) *Track {
 			s += p.ffaEndBonus
 		}
 		s += b.tkBonus(tr)
+		s += b.ffaOppBonus(tr, t)
 		if t-tr.lastSeen < p.freshS {
 			s += 30.0
 		}
@@ -624,6 +629,9 @@ func (b *Brain) prefRange(obs *Obs, tr *Track, hpf float64) float64 {
 		pref = p.rangeLightning
 	} else if tr.has(WeaponKindLightning) {
 		pref = fmax(pref, p.rangeVsLightning)
+	}
+	if b.ffaGunVsLaser(obs, tr) {
+		pref = fmin(pref, p.ffaCloseRange)
 	}
 	return pref
 }
