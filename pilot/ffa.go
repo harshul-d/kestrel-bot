@@ -242,7 +242,7 @@ func (f *FfaFfa) update(obs *Obs, tracks []Track, enabled bool) {
 }
 
 func (b *Brain) ffaPassive(obs *Obs) bool {
-	return b.ffa.on && float64(obs.Alive) > b.p.ffaFairAlive && obs.T < b.p.ffaEndT
+	return b.ffa.on && b.p.ffaOn > 0.5 && float64(obs.Alive) > b.p.ffaFairAlive && obs.T < b.p.ffaEndT
 }
 
 func (b *Brain) ffaEndRival(obs *Obs, tr *Track) bool {

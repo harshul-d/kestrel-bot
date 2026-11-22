@@ -3,6 +3,7 @@ package pilot
 import (
 	"fmt"
 	"math"
+	"os"
 	"time"
 )
 
@@ -57,6 +58,7 @@ type Tgt struct {
 type Brain struct {
 	cfg     Config
 	p       *Params
+	pFfa    *Params // free-for-all settings, swapped in on detection (nil = none)
 	shared  *Shared
 	rng     Rng
 	mem     Memory
@@ -174,6 +176,7 @@ func brainWithParams(hello *Hello, shared *Shared, params Params) *Brain {
 	return &Brain{
 		cfg:    hello.Config,
 		p:      &params,
+		pFfa:   paramsLoadFfa(),
 		shared: shared,
 		rng:    rng,
 		mem:    memoryNew(),
@@ -266,7 +269,13 @@ func (b *Brain) actInner(obs *Obs, budget *Budget) Action {
 		b.cad.update(obs, b.p.cadPeriod, b.p.cadSnap)
 	}
 	b.waveUpdate(obs, world, nav)
-	b.ffa.update(obs, b.mem.tracks, b.p.ffaOn > 0.5)
+	b.ffa.update(obs, b.mem.tracks, b.p.ffaOn > 0.5 || b.pFfa != nil)
+	if b.ffa.on && b.pFfa != nil && b.p != b.pFfa {
+		b.p = b.pFfa
+		if _, ok := os.LookupEnv("FFA_LOG"); ok {
+			logf("FFA settings on at t=%.1f why=%d", obs.T, b.ffa.why)
+		}
+	}
 	b.order.update(obs)
 	b.teleUpdate(obs)
 	if b.p.haltMulti >= 1.0 && !b.order.halted && float64(b.order.onUs(obs.T)) >= b.p.haltMulti {
