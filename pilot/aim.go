@@ -122,6 +122,7 @@ func (b *Brain) pickFireTarget(obs *Obs, world *World, muzzle V3) *struct {
 	var best *cand
 	held := b.held(t)
 	gate := b.gateClosed(obs)
+	laserSlot := b.laserSlot(obs)
 	for i := range b.mem.tracks {
 		tr := &b.mem.tracks[i]
 		if held || tr.kind != ActorKindMech || t-tr.lastSeen > 0.15 {
@@ -171,6 +172,21 @@ func (b *Brain) pickFireTarget(obs *Obs, world *World, muzzle V3) *struct {
 			allow0 = b.mode != ModeRetreat || attacker || (aligned && clear_) || d < 60.0
 		}
 		allow := allow0 && !b.holdFire(obs, d, tr.hp)
+		if laserSlot != nil && allow && clear_ {
+			w := me.Weapons[*laserSlot]
+			if w.Cooldown <= 0.1 && d <= w.Stats.Range*0.98 {
+				// Favor an easy beam while it is available. Moving targets qualify
+				// when their projected path stays exposed through the charge.
+				if len_(tr.vel) < 2 {
+					s += 38
+				} else {
+					left := fclamp(w.Stats.Charge-w.Charge, 0.1, 0.5)
+					if world.ray(muzzle, add(c, scale(tr.vel, left))) == nil {
+						s += 22
+					}
+				}
+			}
+		}
 		if best == nil || s > best.f0 {
 			best = &cand{s, at, allow}
 		}
@@ -495,6 +511,16 @@ func (b *Brain) fireControl(obs *Obs, world *World) AimFireOut {
 	}
 	laserIn := laserW != nil && d <= laserW.Stats.Range*0.98 && los
 	laserCharging := laserW != nil && laserW.Charge > 0.0
+	releaseWindow := false
+	if laserCharging && laserIn {
+		w := laserW
+		full := fmax(w.Stats.Charge, 0.05)
+		frac := fclamp(w.Charge/full, 0, 1)
+		damage := w.Stats.Damage * (w.Stats.MinFrac + (1-w.Stats.MinFrac)*frac)
+		lethal := tg.hp > 0 && damage >= tg.hp*1.05
+		closing := frac >= 0.60 && !tg.fixed && world.ray(muzzle, add(c, scale(tg.vel, 0.2))) != nil
+		releaseWindow = w.Charge >= w.Stats.MinCharge && (lethal || closing)
+	}
 	gunOk := gun != nil && gun.f2
 	var cmd V2
 	if gun != nil {
@@ -506,7 +532,7 @@ func (b *Brain) fireControl(obs *Obs, world *World) AimFireOut {
 	if laserW != nil {
 		w := laserW
 		full := fmax(w.Stats.Charge, 0.05)
-		if laserCharging && w.Charge >= full-0.2 {
+		if laserCharging && (w.Charge >= full-0.2 || releaseWindow) {
 			cmd = direct
 			laserFinal = true
 		} else if !gunOk && (laserCharging || laserIn) {
@@ -569,9 +595,7 @@ func (b *Brain) fireControl(obs *Obs, world *World) AimFireOut {
 		} else {
 			ready := w.Charge >= full-0.051
 			aligned := on(direct, tolY, tolP)
-			part := w.Stats.Damage * (w.Stats.MinFrac + (1.0-w.Stats.MinFrac)*fclamp(w.Charge/full, 0.0, 1.0))
-			lethal := w.Charge >= w.Stats.MinCharge && tg.hp > 0.0 && part >= tg.hp*1.05
-			release := (ready || lethal) && aligned && laserIn
+			release := (ready || releaseWindow) && aligned && laserIn
 			giveUp := !laserIn && w.Charge >= full+fmax(w.Stats.HoldS-0.4, 0.0)
 			out.fire[i] = !(release || giveUp)
 		}
