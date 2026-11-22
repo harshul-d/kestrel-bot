@@ -403,6 +403,14 @@ type Params struct {
 	buDodgeEnergy      float64
 	buRegenHp          float64
 	buRegenSeenS       float64
+	ffaTwoSig          float64
+	ffaCloseLaser      float64
+	ffaCloseRange      float64
+	ffaOppBonus        float64
+	ffaOppHp           float64
+	ffaBankS           float64
+	ffaBankHp          float64
+	ffaBankSlack       float64
 }
 
 func paramsDefault() Params {
@@ -793,6 +801,14 @@ func paramsDefault() Params {
 		buDodgeEnergy:          15.0,
 		buRegenHp:              0.0,
 		buRegenSeenS:           3.0,
+		ffaTwoSig:              0.0,
+		ffaCloseLaser:          0.0,
+		ffaCloseRange:          30.0,
+		ffaOppBonus:            0.0,
+		ffaOppHp:               0.5,
+		ffaBankS:               0.0,
+		ffaBankHp:              0.3,
+		ffaBankSlack:           20.0,
 	}
 }
 
@@ -1190,6 +1206,14 @@ func paramsFieldList(p *Params) []struct {
 		{"bu_dodge_energy", &p.buDodgeEnergy},
 		{"bu_regen_hp", &p.buRegenHp},
 		{"bu_regen_seen_s", &p.buRegenSeenS},
+		{"ffa_bank_slack", &p.ffaBankSlack},
+		{"ffa_bank_hp", &p.ffaBankHp},
+		{"ffa_bank_s", &p.ffaBankS},
+		{"ffa_opp_hp", &p.ffaOppHp},
+		{"ffa_opp_bonus", &p.ffaOppBonus},
+		{"ffa_close_range", &p.ffaCloseRange},
+		{"ffa_close_laser", &p.ffaCloseLaser},
+		{"ffa_two_sig", &p.ffaTwoSig},
 		{"prep_from_s", &p.prepFromS},
 	}
 }

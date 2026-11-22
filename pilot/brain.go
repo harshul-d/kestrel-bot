@@ -269,7 +269,7 @@ func (b *Brain) actInner(obs *Obs, budget *Budget) Action {
 		b.cad.update(obs, b.p.cadPeriod, b.p.cadSnap)
 	}
 	b.waveUpdate(obs, world, nav)
-	b.ffa.update(obs, b.mem.tracks, b.p.ffaOn > 0.5 || b.pFfa != nil)
+	b.ffa.update(obs, b.mem.tracks, b.p.ffaOn > 0.5 || b.pFfa != nil, b.p.ffaTwoSig > 0.5)
 	if b.ffa.on && b.pFfa != nil && b.p != b.pFfa {
 		b.p = b.pFfa
 		if _, ok := os.LookupEnv("FFA_LOG"); ok {
@@ -295,6 +295,9 @@ func (b *Brain) actInner(obs *Obs, budget *Budget) Action {
 		mv.boost = true
 	}
 	if b.vx.seeking && b.p.skBoost >= 0.5 && obs.Me.Grounded && obs.Me.Energy > obs.Me.MaxEnergy*0.5 && math.Hypot(mv.dir[0], mv.dir[1]) > 0.5 {
+		mv.boost = true
+	}
+	if !mv.boost && b.ffaLaserBoost(obs) && math.Hypot(mv.dir[0], mv.dir[1]) > 0.5 {
 		mv.boost = true
 	}
 	if jb := b.gearJet(obs); jb != nil {
