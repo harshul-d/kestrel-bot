@@ -111,10 +111,20 @@ func (b *Brain) vxUpdate(obs *Obs, world *World) {
 		if hpf >= p.rgExit {
 			b.vx.strongKill = false
 		}
+		// A weakened foe that just broke line of sight is a kill to finish, not a reason to rest.
+		prey := false
+		for i := range b.mem.tracks {
+			tr := &b.mem.tracks[i]
+			if tr.kind == ActorKindMech && t-tr.lastSeen < 3.0 && tr.hp < me.Hp*0.6 &&
+				dist(tr.posAt(t), me.Pos) < 120.0 {
+				prey = true
+				break
+			}
+		}
 		if b.vx.regroup {
 			b.vx.regroup = quiet && hpf < p.rgExit
 		} else {
-			b.vx.regroup = quiet && low && me.InZone
+			b.vx.regroup = quiet && low && me.InZone && !prey
 		}
 		b.vx.hold = b.vx.regroup
 	} else {
