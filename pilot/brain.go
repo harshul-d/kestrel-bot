@@ -297,6 +297,9 @@ func (b *Brain) actInner(obs *Obs, budget *Budget) Action {
 	if b.vx.seeking && b.p.skBoost >= 0.5 && obs.Me.Grounded && obs.Me.Energy > obs.Me.MaxEnergy*0.5 && math.Hypot(mv.dir[0], mv.dir[1]) > 0.5 {
 		mv.boost = true
 	}
+	if !mv.boost && b.brawlBoost(obs) && math.Hypot(mv.dir[0], mv.dir[1]) > 0.5 {
+		mv.boost = true
+	}
 	if jb := b.gearJet(obs); jb != nil {
 		mv.jump = mv.jump || jb.f0
 		mv.boost = mv.boost || jb.f1
